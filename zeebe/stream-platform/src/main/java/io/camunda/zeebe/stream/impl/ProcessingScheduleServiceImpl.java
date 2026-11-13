@@ -92,7 +92,28 @@ public class ProcessingScheduleServiceImpl
       LOG.warn("ProcessingScheduleService hasn't been opened yet, ignore scheduled task.");
       return NOOP_SCHEDULED_TASK;
     }
+<<<<<<< HEAD
     return schedule(timestamp, task);
+=======
+    return schedule(actorControl, timestamp, task);
+  }
+
+  @Override
+  public void runAtFixedRate(final Duration delay, final Runnable task) {
+    runDelayed(
+        delay,
+        () -> {
+          if (abortCondition.getAsBoolean()) {
+            return;
+          }
+
+          try {
+            guardRunnable(task).run();
+          } finally {
+            runAtFixedRate(delay, task);
+          }
+        });
+>>>>>>> 050d0ad5 (fix: stop engine fixed-rate tasks running after the processor closes)
   }
 
   @Override

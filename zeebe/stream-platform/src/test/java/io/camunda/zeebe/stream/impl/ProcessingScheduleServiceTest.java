@@ -365,6 +365,96 @@ class ProcessingScheduleServiceTest {
   }
 
   @Test
+<<<<<<< HEAD
+=======
+  void shouldScheduleRunnableOnFixedRate() {
+    // given
+    final var mockedTask = mock(Runnable.class);
+
+    // when
+    scheduleService.runRunnableAtFixedRate(Duration.ofSeconds(1), mockedTask);
+    actorScheduler.workUntilDone();
+    for (int i = 0; i < 5; i++) {
+      actorScheduler.updateClock(Duration.ofSeconds(1));
+      actorScheduler.workUntilDone();
+    }
+
+    // then
+    verify(mockedTask, times(5)).run();
+  }
+
+  @Test
+  void shouldNotExecuteFixedRateRunnableIfAborted() {
+    // given
+    lifecycleSupplier.isAborted = true;
+    final var mockedTask = mock(Runnable.class);
+
+    // when
+    scheduleService.runRunnableAtFixedRate(Duration.ofSeconds(1), mockedTask);
+    actorScheduler.workUntilDone();
+    actorScheduler.updateClock(Duration.ofSeconds(1));
+    actorScheduler.workUntilDone();
+
+    // then
+    verify(mockedTask, never()).run();
+  }
+
+  @Test
+  void shouldNotExecuteFixedRateRunnableIfNotInProcessingPhase() {
+    // given
+    lifecycleSupplier.currentPhase = Phase.PAUSED;
+    final var mockedTask = mock(Runnable.class);
+
+    // when
+    scheduleService.runRunnableAtFixedRate(Duration.ofSeconds(1), mockedTask);
+    actorScheduler.workUntilDone();
+    actorScheduler.updateClock(Duration.ofSeconds(1));
+    actorScheduler.workUntilDone();
+
+    // then
+    verify(mockedTask, never()).run();
+  }
+
+  @Test
+  void shouldKeepFixedRateRunnableScheduledWhileNotInProcessingPhase() {
+    // given
+    lifecycleSupplier.currentPhase = Phase.PAUSED;
+    final var mockedTask = mock(Runnable.class);
+    scheduleService.runRunnableAtFixedRate(Duration.ofSeconds(1), mockedTask);
+    actorScheduler.workUntilDone();
+    actorScheduler.updateClock(Duration.ofSeconds(1));
+    actorScheduler.workUntilDone();
+
+    // when
+    lifecycleSupplier.currentPhase = Phase.PROCESSING;
+    actorScheduler.updateClock(Duration.ofSeconds(1));
+    actorScheduler.workUntilDone();
+
+    // then
+    verify(mockedTask, times(1)).run();
+  }
+
+  @Test
+  void shouldStopFixedRateRunnableOnceAborted() {
+    // given
+    final var mockedTask = mock(Runnable.class);
+    scheduleService.runRunnableAtFixedRate(Duration.ofSeconds(1), mockedTask);
+    actorScheduler.workUntilDone();
+    lifecycleSupplier.isAborted = true;
+    actorScheduler.updateClock(Duration.ofSeconds(1));
+    actorScheduler.workUntilDone();
+
+    // when
+    lifecycleSupplier.isAborted = false;
+    actorScheduler.updateClock(Duration.ofSeconds(1));
+    actorScheduler.workUntilDone();
+
+    // then
+    verify(mockedTask, never()).run();
+  }
+
+  @Test
+>>>>>>> 050d0ad5 (fix: stop engine fixed-rate tasks running after the processor closes)
   void shouldNotRunScheduledTasksAfterClosed() {
     // given
     final var mockedTask = spy(new DummyTask());

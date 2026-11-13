@@ -440,7 +440,20 @@ public enum ZbColumnFamilies implements EnumValue, ScopedColumnFamily {
    * Global, so a partition added by scaling starts with the current policy version. An update that
    * is still being applied is not part of it: that only exists on partition 1.
    */
-  POLICY(172, GLOBAL);
+  POLICY(172, GLOBAL),
+
+  /**
+   * [probeKey | [storeId | secretReference]] -> ∅: the secret references a parked probe waits for,
+   * as {@link #SECRET_REFERENCES_BY_JOB} for jobs. Cleared when the probe becomes activatable again
+   * or ends.
+   */
+  SECRET_REFERENCES_BY_PROBE(173, PARTITION_LOCAL),
+
+  /**
+   * [[storeId | secretReference] | probeKey] -> ∅: the probes parked on a secret reference, as
+   * {@link #JOBS_BY_SECRET_REFERENCE} for jobs. Cleared with {@link #SECRET_REFERENCES_BY_PROBE}.
+   */
+  PROBES_BY_SECRET_REFERENCE(174, PARTITION_LOCAL);
 
   private final int value;
   private final ColumnFamilyScope columnFamilyScope;

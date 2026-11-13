@@ -17,6 +17,7 @@ import io.camunda.zeebe.engine.state.mutable.MutablePolicyUpdateState;
 import io.camunda.zeebe.protocol.ZbColumnFamilies;
 import io.camunda.zeebe.protocol.impl.record.value.policyupdate.PolicyUpdateRecord;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
@@ -61,6 +62,17 @@ public final class DbPolicyUpdateState implements MutablePolicyUpdateState {
     return Optional.ofNullable(
             chunkColumnFamily.get(updateIdAndChunkIndex, PersistedPolicyUpdateChunk::new))
         .map(PersistedPolicyUpdateChunk::getChunk);
+  }
+
+  @Override
+  public Optional<PersistedPolicyUpdate> getOpenUpdate() {
+    final var openUpdateId = new AtomicReference<String>();
+    updateColumnFamily.whileTrue(
+        (key, update) -> {
+          openUpdateId.set(key.toString());
+          return false;
+        });
+    return Optional.ofNullable(openUpdateId.get()).flatMap(this::getUpdate);
   }
 
   @Override

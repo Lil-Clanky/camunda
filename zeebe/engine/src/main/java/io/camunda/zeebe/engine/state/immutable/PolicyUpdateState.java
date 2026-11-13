@@ -24,4 +24,10 @@ public interface PolicyUpdateState {
 
   /** The buffered chunk of the update, if it is there. */
   Optional<PolicyUpdateRecord> getChunk(String updateId, int chunkIndex);
+
+  /**
+   * The update that is buffered but not yet committed, if there is one. The broker sends one update
+   * at a time, and the commit removes it, so at most one update is open.
+   */
+  Optional<PersistedPolicyUpdate> getOpenUpdate();
 }

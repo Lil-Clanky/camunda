@@ -12,6 +12,7 @@ import io.camunda.zeebe.engine.processing.streamprocessor.TypedRecordProcessor;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.StateWriter;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.TypedCommandWriter;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.TypedRejectionWriter;
+import io.camunda.zeebe.engine.processing.streamprocessor.writers.TypedResponseWriter;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.Writers;
 import io.camunda.zeebe.engine.state.immutable.PolicyUpdateState;
 import io.camunda.zeebe.engine.state.policy.PersistedPolicyUpdate;
@@ -32,6 +33,9 @@ import org.jspecify.annotations.NullMarked;
  * update with the update's identifiers, and one update at a time. A chunk that is sent again
  * replaces the buffered one. The processor checks no user authorization; see {@link
  * PolicyUpdateGuard}.
+ *
+ * <p>The broker's Hub receiver sends the chunks as requests and waits for each response, so the
+ * processor answers with the appended event. Once the response arrives, the chunk is buffered.
  */
 @ExcludeAuthorizationCheck
 @NullMarked
@@ -43,6 +47,7 @@ public final class PolicyUpdateAppendChunkProcessor
   private final StateWriter stateWriter;
   private final TypedCommandWriter commandWriter;
   private final TypedRejectionWriter rejectionWriter;
+  private final TypedResponseWriter responseWriter;
 
   public PolicyUpdateAppendChunkProcessor(
       final PolicyUpdateState policyUpdateState,
@@ -53,13 +58,16 @@ public final class PolicyUpdateAppendChunkProcessor
     stateWriter = writers.state();
     commandWriter = writers.command();
     rejectionWriter = writers.rejection();
+    responseWriter = writers.response();
   }
 
   @Override
   public void processRecord(final TypedRecord<PolicyUpdateRecord> command) {
-    final var rejection = PolicyUpdateGuard.checkInternal(command);
+    final var rejection = PolicyUpdateGuard.checkOnDeploymentPartition(command);
     if (rejection.isPresent()) {
       rejectionWriter.appendRejection(command, rejection.get().type(), rejection.get().reason());
+      responseWriter.writeRejectedResponseOnCommand(
+          command, rejection.get().type(), rejection.get().reason());
       return;
     }
 
@@ -67,6 +75,8 @@ public final class PolicyUpdateAppendChunkProcessor
     final boolean wasComplete = completeUpdate(chunk.getUpdateId()).isPresent();
     final long key = keyGenerator.nextKey();
     stateWriter.appendFollowUpEvent(key, PolicyUpdateIntent.CHUNK_APPENDED, chunk);
+    responseWriter.writeAcceptedResponseOnCommand(
+        key, PolicyUpdateIntent.CHUNK_APPENDED, chunk, command);
     if (wasComplete) {
       return;
     }

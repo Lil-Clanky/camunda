@@ -63,6 +63,44 @@ final class PolicyUpdateStateTest {
   }
 
   @Test
+  void shouldHaveNoOpenUpdateWithoutBufferedChunks() {
+    // when
+    final var openUpdate = state.getOpenUpdate();
+
+    // then
+    assertThat(openUpdate).isEmpty();
+  }
+
+  @Test
+  void shouldFindTheOpenUpdateByItsBufferedChunk() {
+    // given
+    state.bufferChunk(chunk("update-1", 1, 3));
+
+    // when
+    final var openUpdate = state.getOpenUpdate();
+
+    // then
+    assertThat(openUpdate)
+        .hasValueSatisfying(
+            update -> {
+              assertThat(update.getUpdate().getUpdateId()).isEqualTo("update-1");
+              assertThat(update.hasAllChunksBuffered()).isFalse();
+            });
+  }
+
+  @Test
+  void shouldHaveNoOpenUpdateOnceTheBufferIsRemoved() {
+    // given
+    state.bufferChunk(chunk("update-1", 0, 1));
+
+    // when
+    state.removeAll();
+
+    // then
+    assertThat(state.getOpenUpdate()).isEmpty();
+  }
+
+  @Test
   void shouldCompleteTheUpdateWhenEveryChunkIsBuffered() {
     // given
     state.bufferChunk(chunk("update-1", 2, 3));

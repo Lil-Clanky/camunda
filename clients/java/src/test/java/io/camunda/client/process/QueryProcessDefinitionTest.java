@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.github.tomakehurst.wiremock.http.RequestMethod;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import io.camunda.client.api.search.enums.ProcessDefinitionState;
+import io.camunda.client.api.search.response.ProcessDefinition;
 import io.camunda.client.impl.search.request.SearchRequestSort;
 import io.camunda.client.impl.search.request.SearchRequestSortMapper;
 import io.camunda.client.protocol.rest.FormResult;
@@ -85,6 +86,24 @@ public class QueryProcessDefinitionTest extends ClientRestTest {
   }
 
   @Test
+  public void shouldGetProcessDefinitionWithSuspendedState() {
+    // given
+    final long processDefinitionKey = 123L;
+    gatewayService.onProcessDefinitionRequest(
+        processDefinitionKey,
+        Instancio.create(ProcessDefinitionResult.class)
+            .processDefinitionKey("2")
+            .state(ProcessDefinitionResult.StateEnum.SUSPENDED));
+
+    // when
+    final ProcessDefinition processDefinition =
+        client.newProcessDefinitionGetRequest(processDefinitionKey).send().join();
+
+    // then
+    assertThat(processDefinition.getState()).isEqualTo(ProcessDefinitionState.SUSPENDED);
+  }
+
+  @Test
   public void shouldSearchProcessDefinitionWithEmptyQuery() {
     // when
     client.newProcessDefinitionSearchRequest().send().join();
@@ -125,6 +144,22 @@ public class QueryProcessDefinitionTest extends ClientRestTest {
     assertThat(filter.getProcessDefinitionId().get$Eq()).isEqualTo("orderProcess");
     assertThat(filter.getTenantId()).isEqualTo("<default>");
     assertThat(filter.getState()).isEqualTo(ProcessDefinitionFilter.StateEnum.DELETED);
+  }
+
+  @Test
+  public void shouldSearchProcessDefinitionWithSuspendedState() {
+    // when
+    client
+        .newProcessDefinitionSearchRequest()
+        .filter(f -> f.state(ProcessDefinitionState.SUSPENDED))
+        .send()
+        .join();
+
+    // then
+    final ProcessDefinitionSearchQuery request =
+        gatewayService.getLastRequest(ProcessDefinitionSearchQuery.class);
+    assertThat(request.getFilter().getState())
+        .isEqualTo(ProcessDefinitionFilter.StateEnum.SUSPENDED);
   }
 
   @Test

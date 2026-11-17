@@ -13,6 +13,7 @@ import static java.util.Objects.requireNonNull;
 import io.camunda.zeebe.journal.CorruptedJournalException;
 import io.camunda.zeebe.journal.JournalException;
 import io.camunda.zeebe.journal.JournalException.OutOfDiskSpace;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.journal.JournalMetaStore;
 import io.camunda.zeebe.util.logging.ThrottledLogger;
 import java.io.IOException;
@@ -156,6 +157,12 @@ final class SegmentsManager implements AutoCloseable {
         currentSegment =
             nextSegment.join().initializeForUse(nextSegmentIndex, lastWrittenAsqn, journalMetrics);
       } catch (final CompletionException e) {
+        if (e.getCause() instanceof final SyncFailed syncFailed) {
+          // creating the segment again would sync the same directory again, which may succeed
+          // without writing what failed to sync
+          nextSegment = null;
+          throw syncFailed;
+        }
         LOG.error("Failed to acquire next segment, retrying synchronously now.", e);
         nextSegment = null;
         currentSegment = createSegment(descriptor, lastWrittenAsqn);

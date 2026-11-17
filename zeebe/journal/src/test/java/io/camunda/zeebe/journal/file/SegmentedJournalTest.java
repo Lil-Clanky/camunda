@@ -18,13 +18,16 @@ package io.camunda.zeebe.journal.file;
 import static io.camunda.zeebe.journal.file.SegmentedJournal.ASQN_IGNORE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
+import static org.assertj.core.api.AssertionsForClassTypes.catchThrowable;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
+import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.JournalException.InvalidAsqn;
 import io.camunda.zeebe.journal.JournalException.OutOfDiskSpace;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.journal.JournalReader;
 import io.camunda.zeebe.journal.JournalRecord;
 import io.camunda.zeebe.journal.record.PersistedJournalRecord;
@@ -1689,6 +1692,33 @@ class SegmentedJournalTest {
     final var restarted = restartFactory.journal(restartFactory.segmentsManager(flushed));
     closeables.add(restarted);
     assertThat(restarted.getLastIndex()).isEqualTo(11);
+  }
+
+  @Test
+  void shouldFailEveryFlushAfterFailingToSyncNewSegment() {
+    // given - preparing the second segment fails to sync, e.g. the zeroes written to allocate it
+    final var allocations = new AtomicInteger();
+    final var error = new SyncFailed("Failed to sync", new IOException("Input/output error"));
+    journalFactory =
+        new TestJournalFactory(
+            "test",
+            1,
+            (channel, fd, size) -> {
+              if (allocations.incrementAndGet() > 1) {
+                throw error;
+              }
+            });
+    journal = journalFactory.journal(journalFactory.segmentsManager(directory));
+    closeables.add(journal);
+    journal.append(journalFactory.entry());
+
+    // when - the next append needs the second segment
+    final var thrown = catchThrowable(() -> journal.append(journalFactory.entry()));
+
+    // then - the segment is not created again, and the journal is never flushed again
+    assertThat(thrown).isSameAs(error);
+    assertThat(allocations).hasValue(2);
+    assertThatThrownBy(journal::flush).isInstanceOf(FlushException.class).hasCause(error);
   }
 
   private SegmentedJournal openJournal(final int entriesPerSegment) {

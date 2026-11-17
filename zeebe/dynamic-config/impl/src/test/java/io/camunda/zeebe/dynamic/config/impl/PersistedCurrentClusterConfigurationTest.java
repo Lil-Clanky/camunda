@@ -9,6 +9,7 @@ package io.camunda.zeebe.dynamic.config.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import io.atomix.cluster.MemberId;
 import io.camunda.zeebe.dynamic.config.PersistedClusterConfiguration;
@@ -73,6 +74,22 @@ final class PersistedCurrentClusterConfigurationTest {
     // then
     assertThat(reloaded.isUninitialized()).isFalse();
     assertThat(reloaded.getConfiguration()).isEqualTo(config);
+  }
+
+  @Test
+  void shouldNotUseConfigurationWhichFailedToBeWritten() throws IOException {
+    // given - a write that fails, standing in for a failed sync of the DSYNC write
+    final var file = tmp.resolve("config.meta");
+    final var persisted = PersistedCurrentClusterConfiguration.ofFile(file, serializer);
+    Files.createDirectory(file);
+
+    // when
+    final var thrown = catchThrowable(() -> persisted.update(sampleConfiguration()));
+
+    // then - the configuration is not used, so it is not gossiped or applied; the next update
+    // rewrites the whole file instead of syncing it again
+    assertThat(thrown).isInstanceOf(IOException.class);
+    assertThat(persisted.isUninitialized()).isTrue();
   }
 
   @Test

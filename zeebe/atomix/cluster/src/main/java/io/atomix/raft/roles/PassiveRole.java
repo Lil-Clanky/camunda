@@ -44,6 +44,7 @@ import io.atomix.raft.protocol.ReplicatableRaftRecord;
 import io.atomix.raft.protocol.VoteRequest;
 import io.atomix.raft.protocol.VoteResponse;
 import io.atomix.raft.snapshot.impl.SnapshotChunkImpl;
+import io.atomix.raft.storage.StorageException;
 import io.atomix.raft.storage.log.IndexedRaftLogEntry;
 import io.atomix.raft.storage.log.RaftLogReader;
 import io.atomix.raft.storage.system.Configuration;
@@ -51,6 +52,7 @@ import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.JournalException;
 import io.camunda.zeebe.journal.JournalException.InvalidChecksum;
 import io.camunda.zeebe.journal.JournalException.InvalidIndex;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.snapshots.PersistedSnapshot;
 import io.camunda.zeebe.snapshots.ReceivedSnapshot;
 import io.camunda.zeebe.snapshots.SnapshotException.SnapshotAlreadyExistsException;
@@ -122,7 +124,7 @@ public class PassiveRole extends InactiveRole {
   private void deleteLogAfter(final long index) {
     try {
       raft.getLog().deleteAfter(index);
-    } catch (final FlushException e) {
+    } catch (final FlushException | SyncFailed | StorageException e) {
       throw raft.failOnStorageError(
           "Failed to flush the journal after deleting entries after index %d".formatted(index), e);
     }
@@ -1106,6 +1108,8 @@ public class PassiveRole extends InactiveRole {
     } catch (final InvalidIndex e) {
       failAppend(index - 1, future);
       return false;
+    } catch (final SyncFailed | StorageException e) {
+      throw raft.failOnStorageError("Failed to append entry at index %d".formatted(index), e);
     } catch (final Exception e) {
       log.error("Failed to append entry at index {}", entry.index(), e);
       failAppend(index - 1, future);
@@ -1179,7 +1183,12 @@ public class PassiveRole extends InactiveRole {
    * came from one of them is dropped too.
    */
   private void resetLog(final long firstIndex) {
-    raft.getLog().reset(firstIndex);
+    try {
+      raft.getLog().reset(firstIndex);
+    } catch (final SyncFailed | StorageException e) {
+      throw raft.failOnStorageError(
+          "Failed to reset the journal to index %d".formatted(firstIndex), e);
+    }
     raft.getCluster().reloadStoredConfiguration();
   }
 }

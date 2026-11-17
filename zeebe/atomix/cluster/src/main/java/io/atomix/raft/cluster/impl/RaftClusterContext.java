@@ -26,6 +26,7 @@ import io.atomix.raft.cluster.RaftMember;
 import io.atomix.raft.cluster.RaftMember.Type;
 import io.atomix.raft.impl.RaftContext;
 import io.atomix.raft.impl.ReconfigurationHelper;
+import io.atomix.raft.storage.StorageException;
 import io.atomix.raft.storage.log.entry.ConfigurationEntry;
 import io.atomix.raft.storage.system.Configuration;
 import io.atomix.raft.utils.JointConsensusVoteQuorum;
@@ -594,7 +595,12 @@ public final class RaftClusterContext implements RaftCluster, AutoCloseable {
     // If the local stored configuration is older than the committed configuration, overwrite it.
     final var storedConfiguration = raft.getMetaStore().loadConfiguration();
     if (storedConfiguration == null || storedConfiguration.index() < configuration.index()) {
-      raft.getMetaStore().storeConfiguration(configuration);
+      try {
+        raft.getMetaStore().storeConfiguration(configuration);
+      } catch (final StorageException e) {
+        throw raft.failOnStorageError(
+            "Failed to store the configuration at index %d".formatted(configuration.index()), e);
+      }
     }
 
     // Members kept alive as replication targets while the configuration was appended but not yet

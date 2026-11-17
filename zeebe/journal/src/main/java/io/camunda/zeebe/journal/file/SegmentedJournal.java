@@ -22,6 +22,7 @@ import static java.util.Objects.requireNonNull;
 import com.google.common.collect.Sets;
 import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.Journal;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.journal.JournalMetaStore;
 import io.camunda.zeebe.journal.JournalReader;
 import io.camunda.zeebe.journal.JournalRecord;
@@ -51,7 +52,7 @@ public final class SegmentedJournal implements Journal {
   private final StampedLock rwlock = new StampedLock();
   private final SegmentsManager segments;
   private final JournalMetaStore metaStore;
-  // the first failed flush, after which no flush may succeed anymore
+  // the first failed sync, after which no flush may succeed anymore; see flush()
   private volatile @Nullable Throwable syncFailure;
 
   SegmentedJournal(
@@ -86,6 +87,9 @@ public final class SegmentedJournal implements Journal {
     assertOpen();
     try (final var ignored = journalMetrics.observeAppendLatency()) {
       return writer.append(asqn, recordDataWriter);
+    } catch (final SyncFailed e) {
+      recordSyncFailure(e);
+      throw e;
     }
   }
 
@@ -94,6 +98,9 @@ public final class SegmentedJournal implements Journal {
     assertOpen();
     try (final var ignored = journalMetrics.observeAppendLatency()) {
       writer.append(record);
+    } catch (final SyncFailed e) {
+      recordSyncFailure(e);
+      throw e;
     }
   }
 
@@ -102,6 +109,9 @@ public final class SegmentedJournal implements Journal {
     assertOpen();
     try (final var ignored = journalMetrics.observeAppendLatency()) {
       return writer.append(checksum, serializedRecord);
+    } catch (final SyncFailed e) {
+      recordSyncFailure(e);
+      throw e;
     }
   }
 
@@ -113,6 +123,9 @@ public final class SegmentedJournal implements Journal {
           try {
             writer.deleteAfter(indexExclusive, hasConcurrentReaderPast(indexExclusive));
             readers.forEach(reader -> reader.onTruncatedAfter(indexExclusive));
+          } catch (final SyncFailed e) {
+            recordSyncFailure(e);
+            throw e;
           } finally {
             rwlock.unlockWrite(stamp);
           }
@@ -124,6 +137,9 @@ public final class SegmentedJournal implements Journal {
     final var stamp = rwlock.writeLock();
     try {
       return segments.deleteUntil(index);
+    } catch (final SyncFailed e) {
+      recordSyncFailure(e);
+      throw e;
     } finally {
       rwlock.unlockWrite(stamp);
     }
@@ -139,6 +155,9 @@ public final class SegmentedJournal implements Journal {
       // with a greater index than what we previously had. it's fine if the stored last flushed
       // index is lower than the real flushed index. every thing will be treated as a partial write
       // until the next flush, which is fine
+    } catch (final SyncFailed e) {
+      recordSyncFailure(e);
+      throw e;
     } finally {
       rwlock.unlockWrite(stamp);
     }
@@ -161,7 +180,7 @@ public final class SegmentedJournal implements Journal {
   }
 
   /**
-   * Flushes the journal, unless a previous flush failed.
+   * Flushes the journal, unless a previous sync failed.
    *
    * <p>A failed flush, or any other failed sync of the journal's files (e.g. when creating a
    * segment), may leave records only in the page cache: the kernel marks their pages clean and
@@ -175,7 +194,7 @@ public final class SegmentedJournal implements Journal {
     final var previousFailure = syncFailure;
     if (previousFailure != null) {
       throw new FlushException(
-          "Expected to flush the journal, but a previous flush failed; records written since the last successful flush may not be on disk",
+          "Expected to flush the journal, but a previous sync failed; records written since the last successful flush may not be on disk",
           previousFailure);
     }
 

@@ -45,6 +45,7 @@ import io.camunda.zeebe.journal.CheckedJournalException;
 import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.JournalException;
 import io.camunda.zeebe.journal.JournalException.InvalidChecksum;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.snapshots.PersistedSnapshot;
 import io.camunda.zeebe.snapshots.ReceivableSnapshotStore;
 import io.camunda.zeebe.snapshots.ReceivedSnapshot;
@@ -402,6 +403,31 @@ public class PassiveRoleTest {
     assertThat(response).failsWithin(Duration.ZERO).withThrowableThat().withCause(failure);
     verify(ctx).failOnStorageError(any(), eq(flushError));
     verify(ctx, never()).setCommitIndex(anyLong());
+  }
+
+  @Test
+  public void shouldFailServerWhenAppendFailsToSync() {
+    // given - e.g. syncing the directory after creating the next segment failed
+    final var syncError = new SyncFailed("Failed to sync", new IOException("Input/output error"));
+    final var failure = new UnrecoverableException("failed");
+    when(log.append(any(ReplicatableJournalRecord.class))).thenThrow(syncError);
+    when(ctx.failOnStorageError(any(), any())).thenReturn(failure);
+    final var request =
+        VersionedAppendRequest.builder()
+            .withTerm(1)
+            .withLeader(MemberId.anonymous())
+            .withPrevLogTerm(0)
+            .withPrevLogIndex(0)
+            .withEntries(List.of(new ReplicatableJournalRecord(1, 1, 1, new byte[1])))
+            .withCommitIndex(1)
+            .build();
+
+    // when
+    final var response = role.handleAppend(ProtocolVersionHandler.transform(request));
+
+    // then - the server fails instead of rejecting the append and waiting for a resend
+    assertThat(response).failsWithin(Duration.ZERO).withThrowableThat().withCause(failure);
+    verify(ctx).failOnStorageError(any(), eq(syncError));
   }
 
   @Test

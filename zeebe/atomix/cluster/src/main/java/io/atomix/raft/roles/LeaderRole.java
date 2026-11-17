@@ -51,6 +51,7 @@ import io.atomix.raft.protocol.TransferResponse;
 import io.atomix.raft.protocol.VoteRequest;
 import io.atomix.raft.protocol.VoteResponse;
 import io.atomix.raft.rebalance.LeadershipTransferRunner;
+import io.atomix.raft.storage.StorageException;
 import io.atomix.raft.storage.log.IndexedRaftLogEntry;
 import io.atomix.raft.storage.log.RaftLogReader;
 import io.atomix.raft.storage.log.entry.ApplicationEntry;
@@ -64,6 +65,7 @@ import io.atomix.raft.zeebe.EntryValidator.ValidationResult;
 import io.atomix.raft.zeebe.ZeebeLogAppender;
 import io.atomix.utils.concurrent.Scheduled;
 import io.camunda.zeebe.journal.JournalException;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.util.buffer.BufferWriter;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
@@ -937,6 +939,9 @@ public final class LeaderRole extends ActiveRole implements ZeebeLogAppender {
             retries,
             MAX_APPEND_ATTEMPTS,
             e);
+      } catch (final SyncFailed | StorageException e) {
+        // appending again could sync the same files again, which may succeed without writing
+        throw raft.failOnStorageError("Failed to append entry %s".formatted(entry), e);
       } catch (final JournalException
           | UncheckedIOException e) { // JournalException will wrap most IOException
         lastError = e;

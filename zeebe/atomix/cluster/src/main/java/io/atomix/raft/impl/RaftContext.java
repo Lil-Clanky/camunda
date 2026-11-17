@@ -471,7 +471,8 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
 
     final CompletableFuture<R> future = new CompletableFuture<>();
     threadContext.execute(
-        () ->
+        () -> {
+          try {
             role.shouldAcceptRequest(request)
                 .ifRightOrLeft(
                     ignore ->
@@ -490,7 +491,15 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
                           responseBuilder.get().withStatus(Status.ERROR).withError(error).build();
                       LOGGER.trace("Sending {}", response);
                       future.complete(response);
-                    }));
+                    });
+          } catch (final UnrecoverableException e) {
+            if (storageFailure == null) {
+              throw e;
+            }
+            // thrown by failOnStorageError, which already failed this server
+            future.completeExceptionally(e);
+          }
+        });
 
     return future;
   }
@@ -1177,7 +1186,11 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
     // cannot be overridden.
     checkState(!(lastVotedFor != null && candidate != null), "Already voted for another candidate");
     lastVotedFor = candidate;
-    meta.storeVote(lastVotedFor);
+    try {
+      meta.storeVote(lastVotedFor);
+    } catch (final StorageException e) {
+      throw failOnStorageError("Failed to store the vote for %s".formatted(candidate), e);
+    }
 
     if (candidate != null) {
       LOGGER.debug("Voted for {}", candidate);
@@ -1338,8 +1351,12 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
       this.term = term;
       leader = null;
       lastVotedFor = null;
-      meta.storeTerm(this.term);
-      meta.storeVote(lastVotedFor);
+      try {
+        meta.storeTerm(this.term);
+        meta.storeVote(lastVotedFor);
+      } catch (final StorageException e) {
+        throw failOnStorageError("Failed to store term %d".formatted(term), e);
+      }
       LOGGER.debug("Set term {}", term);
     }
   }

@@ -118,6 +118,7 @@ public final class ControllableRaftContexts {
   private final Map<MemberId, MeterRegistry> meterRegistries = new HashMap<>();
   private final Map<MemberId, AtomicBoolean> failNextFlush = new HashMap<>();
   private final Map<MemberId, AtomicBoolean> failNextMetaStoreWrite = new HashMap<>();
+  private boolean metaStoreWritesFailable;
   private Duration electionTimeout;
   private Duration heartbeatTimeout;
   private int nextEntry = 0;
@@ -264,7 +265,7 @@ public final class ControllableRaftContexts {
         createRaftContext(
             memberId,
             random,
-            withFailableMetaStore(
+            withFailableMetaStoreIfEnabled(
                 memberId,
                 createStorage(
                     memberId,
@@ -472,14 +473,32 @@ public final class ControllableRaftContexts {
   }
 
   /**
-   * Makes the next write of the term, vote or configuration to the given member's meta store fail,
-   * like a failed fsync.
+   * Allows {@link #failNextMetaStoreWrite(MemberId)}; must be called before {@link #setup}. It is
+   * opt-in, as it wraps every member's meta store in a spy.
    */
-  public void failNextMetaStoreWrite(final MemberId memberId) {
-    failNextMetaStoreWrite.get(memberId).set(true);
+  public void enableMetaStoreWriteFailures() {
+    metaStoreWritesFailable = true;
   }
 
-  private RaftStorage withFailableMetaStore(final MemberId memberId, final RaftStorage storage) {
+  /**
+   * Makes the next write of the term, vote or configuration to the given member's meta store fail,
+   * like a failed fsync. Requires {@link #enableMetaStoreWriteFailures()}.
+   */
+  public void failNextMetaStoreWrite(final MemberId memberId) {
+    final var failNext = failNextMetaStoreWrite.get(memberId);
+    if (failNext == null) {
+      throw new IllegalStateException(
+          "Expected meta store write failures to be enabled before setup, but they were not");
+    }
+    failNext.set(true);
+  }
+
+  private RaftStorage withFailableMetaStoreIfEnabled(
+      final MemberId memberId, final RaftStorage storage) {
+    if (!metaStoreWritesFailable) {
+      return storage;
+    }
+
     final var failNext = failNextMetaStoreWrite.computeIfAbsent(memberId, m -> new AtomicBoolean());
     final Answer<Object> failableWrite =
         invocation -> {

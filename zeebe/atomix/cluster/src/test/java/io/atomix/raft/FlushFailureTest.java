@@ -30,7 +30,6 @@ final class FlushFailureTest {
   private static final MemberId LEADER = MemberId.from("2");
   private static final MemberId FOLLOWER = MemberId.from("1");
   private static final MemberId OTHER_FOLLOWER = MemberId.from("0");
-  private static final List<MemberId> MEMBERS = List.of(LEADER, FOLLOWER, OTHER_FOLLOWER);
 
   @TempDir private Path directory;
   private ControllableRaftContexts raft;
@@ -99,6 +98,28 @@ final class FlushFailureTest {
     assertThat(context(LEADER).getCommitIndex()).isEqualTo(lastIndex);
   }
 
+  @Test
+  void shouldElectNewLeaderAfterLeaderFailedToFlush() {
+    // given
+    raft.failNextFlush(LEADER);
+    raft.clientAppendOnLeader();
+    replicate();
+    assertFailed(LEADER, "Failed to flush the journal before committing index");
+
+    // when
+    final var newLeader = electLeaderAmongFollowers();
+    final long initialEntryIndex = context(newLeader).getLog().getLastIndex();
+    for (int i = 0; i < 100 && context(newLeader).getCommitIndex() < initialEntryIndex; i++) {
+      raft.tickHeartbeatTimeout(newLeader);
+      raft.processAllMessage();
+      raft.runUntilDone();
+    }
+
+    // then - the remaining members keep committing, and the failed leader stays inactive
+    assertThat(context(newLeader).getCommitIndex()).isGreaterThanOrEqualTo(initialEntryIndex);
+    assertThat(context(LEADER).getRole()).isEqualTo(Role.INACTIVE);
+  }
+
   private void assertFailed(final MemberId member, final String expectedMessage) {
     final var context = context(member);
     assertThat(context.getRole()).isEqualTo(Role.INACTIVE);
@@ -123,6 +144,26 @@ final class FlushFailureTest {
     // records the leader, which clientAppendOnLeader appends on
     raft.assertAtMostOneLeader();
     replicate();
+  }
+
+  /**
+   * Elects a new leader among the two followers. Only one member's election timer fires at a time,
+   * so they do not split the vote.
+   */
+  private MemberId electLeaderAmongFollowers() {
+    for (int i = 0; i < 20; i++) {
+      for (final var candidate : List.of(FOLLOWER, OTHER_FOLLOWER)) {
+        raft.tickElectionTimeout(candidate);
+        for (int j = 0; j < 10; j++) {
+          raft.processAllMessage();
+          raft.runUntilDone();
+        }
+        if (context(candidate).getRole() == Role.LEADER) {
+          return candidate;
+        }
+      }
+    }
+    throw new AssertionError("No leader elected among " + FOLLOWER + " and " + OTHER_FOLLOWER);
   }
 
   private void replicate() {

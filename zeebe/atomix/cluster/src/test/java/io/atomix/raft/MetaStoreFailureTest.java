@@ -38,6 +38,7 @@ final class MetaStoreFailureTest {
   @BeforeEach
   void setup() throws Exception {
     raft = new ControllableRaftContexts(3);
+    raft.enableMetaStoreWriteFailures();
     raft.setup(directory, new Random(1));
   }
 

@@ -10,8 +10,8 @@ package io.camunda.zeebe.broker.bootstrap;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.camunda.zeebe.broker.system.configuration.BrokerCfg;
@@ -40,6 +40,7 @@ final class DropDataDirectoryPageCacheStepTest {
     final var brokerCfg = new BrokerCfg();
     brokerCfg.getData().setDirectory(dataDirectory.toString());
 
+    when(posixFs.isDropPageCacheSupported()).thenReturn(true);
     context = mock(BrokerStartupContext.class);
     when(context.getBrokerConfiguration()).thenReturn(brokerCfg);
     when(context.getConcurrencyControl()).thenReturn(new TestConcurrencyControl());
@@ -82,12 +83,27 @@ final class DropDataDirectoryPageCacheStepTest {
   }
 
   @Test
+  void shouldNotWalkDataDirectoryWhenPageCacheCannotBeDroppedOnPlatform() throws Exception {
+    // given
+    Files.createDirectories(dataDirectory);
+    Files.writeString(dataDirectory.resolve("file"), "content");
+    when(posixFs.isDropPageCacheSupported()).thenReturn(false);
+
+    // when
+    final var started = sut.startup(context);
+
+    // then
+    assertThat(started).succeedsWithin(TIME_OUT);
+    verify(posixFs, never()).dropPageCache(any());
+  }
+
+  @Test
   void shouldStartWithoutDataDirectory() {
     // when
     final var started = sut.startup(context);
 
     // then
     assertThat(started).succeedsWithin(TIME_OUT);
-    verifyNoInteractions(posixFs);
+    verify(posixFs, never()).dropPageCache(any());
   }
 }

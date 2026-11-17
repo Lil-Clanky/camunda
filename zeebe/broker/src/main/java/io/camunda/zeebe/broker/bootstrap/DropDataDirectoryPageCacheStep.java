@@ -51,7 +51,7 @@ final class DropDataDirectoryPageCacheStep extends AbstractBrokerStartupStep {
       final ActorFuture<BrokerStartupContext> startupFuture) {
     final var dataDirectory =
         Path.of(brokerStartupContext.getBrokerConfiguration().getData().getDirectory());
-    if (Files.isDirectory(dataDirectory)) {
+    if (posixFs.isDropPageCacheSupported() && Files.isDirectory(dataDirectory)) {
       dropPageCache(dataDirectory);
     }
 

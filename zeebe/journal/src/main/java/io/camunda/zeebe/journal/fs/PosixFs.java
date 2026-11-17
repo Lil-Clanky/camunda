@@ -164,7 +164,7 @@ public final class PosixFs {
    */
   public boolean dropPageCache(final Path file) {
     final var fileDescriptorFdField = FILE_DESCRIPTOR_FD_FIELD;
-    if (fileDescriptorFdField == null || !Platform.getNativePlatform().getOS().equals(OS.LINUX)) {
+    if (fileDescriptorFdField == null || !isDropPageCacheSupported()) {
       return false;
     }
 
@@ -183,6 +183,15 @@ public final class PosixFs {
       LOGGER.debug("Failed to drop cached pages of {}", file, e);
       return false;
     }
+  }
+
+  /**
+   * Returns whether {@link #dropPageCache(Path)} can drop anything on this platform. If this
+   * returns false, then {@link #dropPageCache(Path)} does nothing.
+   */
+  public boolean isDropPageCacheSupported() {
+    return FILE_DESCRIPTOR_FD_FIELD != null
+        && Platform.getNativePlatform().getOS().equals(OS.LINUX);
   }
 
   private static int posixFadviseDontNeed() {

@@ -453,6 +453,19 @@ final class ActorErrorHandlingTest {
         .withMessage("metrics failure");
   }
 
+  @Test
+  void shouldCompleteCloseWhenActorFailsAfterClosing() {
+    // given
+    final var actor = startActor(new FailingOnCloseActor());
+
+    // when
+    final var closeFuture = actor.closeAsync();
+    scheduler.workUntilDone();
+
+    // then
+    assertThat(closeFuture).isDone();
+  }
+
   private <T extends Actor> T startActor(final T actor) {
     scheduler.submitActor(actor);
     scheduler.workUntilDone();
@@ -468,6 +481,13 @@ final class ActorErrorHandlingTest {
   }
 
   private static final class DefaultActor extends Actor {}
+
+  private static final class FailingOnCloseActor extends Actor {
+    @Override
+    protected void onActorClosed() {
+      actor.fail(new IllegalStateException("close failure"));
+    }
+  }
 
   private static final class FailingHandlerActor extends Actor {
     private boolean failed;

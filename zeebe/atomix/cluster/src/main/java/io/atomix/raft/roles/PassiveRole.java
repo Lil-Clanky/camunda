@@ -58,7 +58,6 @@ import io.camunda.zeebe.snapshots.ReceivedSnapshot;
 import io.camunda.zeebe.snapshots.SnapshotException.SnapshotAlreadyExistsException;
 import io.camunda.zeebe.snapshots.impl.SnapshotChunkId;
 import io.camunda.zeebe.util.Either;
-import io.camunda.zeebe.util.exception.UnrecoverableException;
 import io.camunda.zeebe.util.logging.ThrottledLogger;
 import java.nio.ByteBuffer;
 import java.time.Duration;
@@ -752,13 +751,7 @@ public class PassiveRole extends InactiveRole {
     }
 
     // Append the entries to the log.
-    try {
-      appendEntries(request, future);
-    } catch (final UnrecoverableException e) {
-      // the server failed to persist the entries and is now inactive; answer the leader anyway
-      future.completeExceptionally(e);
-      return future;
-    }
+    appendEntries(request, future);
 
     // If the request contains entries, abort any in-progress snapshot replication. The follower
     // is now receiving log entries and must not continue waiting for snapshot chunks. We skip this

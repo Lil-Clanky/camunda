@@ -16,6 +16,7 @@
 package io.atomix.raft.roles;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -53,7 +54,6 @@ import io.camunda.zeebe.util.exception.UnrecoverableException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -397,10 +397,11 @@ public class PassiveRoleTest {
             .build();
 
     // when
-    final var response = role.handleAppend(ProtocolVersionHandler.transform(request));
+    final var thrown =
+        catchThrowable(() -> role.handleAppend(ProtocolVersionHandler.transform(request)));
 
     // then - the entry is not acknowledged, and the server fails instead of waiting for a resend
-    assertThat(response).failsWithin(Duration.ZERO).withThrowableThat().withCause(failure);
+    assertThat(thrown).isSameAs(failure);
     verify(ctx).failOnStorageError(any(), eq(flushError));
     verify(ctx, never()).setCommitIndex(anyLong());
   }
@@ -423,10 +424,11 @@ public class PassiveRoleTest {
             .build();
 
     // when
-    final var response = role.handleAppend(ProtocolVersionHandler.transform(request));
+    final var thrown =
+        catchThrowable(() -> role.handleAppend(ProtocolVersionHandler.transform(request)));
 
     // then - the server fails instead of rejecting the append and waiting for a resend
-    assertThat(response).failsWithin(Duration.ZERO).withThrowableThat().withCause(failure);
+    assertThat(thrown).isSameAs(failure);
     verify(ctx).failOnStorageError(any(), eq(syncError));
   }
 
@@ -452,10 +454,11 @@ public class PassiveRoleTest {
             .build();
 
     // when
-    final var response = role.handleAppend(ProtocolVersionHandler.transform(request));
+    final var thrown =
+        catchThrowable(() -> role.handleAppend(ProtocolVersionHandler.transform(request)));
 
     // then - the leader's entry is neither appended nor acknowledged
-    assertThat(response).failsWithin(Duration.ZERO).withThrowableThat().withCause(failure);
+    assertThat(thrown).isSameAs(failure);
     verify(ctx).failOnStorageError(any(), eq(flushError));
     verify(log, never()).append(any(ReplicatableJournalRecord.class));
   }

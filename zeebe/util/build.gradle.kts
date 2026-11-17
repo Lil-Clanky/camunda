@@ -24,6 +24,7 @@ dependencies {
   testImplementation(libs.org.mockito.mockito.core)
   testImplementation(libs.net.bytebuddy.byte.buddy)
   compileOnly(libs.junit.junit)
+  compileOnly(libs.net.jcip.jcip.annotations)
 }
 
 description = "Zeebe Util"

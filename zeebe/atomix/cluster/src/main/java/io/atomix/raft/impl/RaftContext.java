@@ -174,6 +174,8 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
 
   // set once a write to the data directory may not have reached the disk; see failOnStorageError
   private volatile UnrecoverableException storageFailure;
+  // false while the constructor runs, which is not on the Raft thread; see failOnStorageError
+  private volatile boolean constructed;
 
   private long lastHeartbeat;
   private final RaftPartitionConfig partitionConfig;
@@ -304,6 +306,7 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
       // message from other healthy replicas.
       setTerm(raftLog.getLastEntry().term());
     }
+    constructed = true;
   }
 
   private ThreadContext createThreadContext(
@@ -354,20 +357,26 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
    * be trusted again after a restart, and the replica has to be recovered manually (e.g. by
    * deleting its data and letting it replicate from the other replicas).
    *
-   * <p>Must be called on the Raft thread. The caller should throw the returned exception, so that
-   * it does not act on the write that may not be on disk, e.g. acknowledge appended entries.
+   * <p>Must be called on the Raft thread, or from the constructor, where it only returns the
+   * failure: throwing it fails the creation of this server. The caller should throw the returned
+   * exception, so that it does not act on the write that may not be on disk, e.g. acknowledge
+   * appended entries.
    *
    * @param message describes which write failed
    * @param cause the failure of the write or its sync
    * @return the failure to throw
    */
   public UnrecoverableException failOnStorageError(final String message, final Throwable cause) {
-    checkThread();
     final var error =
         new UnrecoverableException(
             message
                 + "; data written since the last successful sync may not be on disk, so this replica must be recovered manually",
             cause);
+    if (!constructed) {
+      return error;
+    }
+
+    checkThread();
     if (storageFailure != null) {
       storageFailure.addSuppressed(error);
       return error;

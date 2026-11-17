@@ -28,7 +28,6 @@ import io.atomix.raft.LeadershipTransferCoordinatorCheck;
 import io.atomix.raft.LeadershipTransferWriteBarrier;
 import io.atomix.raft.RaftApplicationEntryCommittedPositionListener;
 import io.atomix.raft.RaftCommitListener;
-import io.atomix.raft.RaftException.CommitFailedException;
 import io.atomix.raft.RaftRoleChangeListener;
 import io.atomix.raft.RaftServer.Role;
 import io.atomix.raft.RaftThreadContextFactory;
@@ -173,6 +172,9 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
   @SuppressWarnings("java:S3077") // allow volatile here, health is immutable
   private volatile HealthReport health;
 
+  // set once a write to the data directory may not have reached the disk; see failOnStorageError
+  private volatile UnrecoverableException storageFailure;
+
   private long lastHeartbeat;
   private final RaftPartitionConfig partitionConfig;
   private final PartitionId partitionId;
@@ -235,6 +237,10 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
             () ->
                 createThreadContext(
                     "raft-log", partitionId, threadContextFactory, localMemberId.id()));
+    raftLog.setAsyncFlushFailureListener(
+        error ->
+            threadContext.execute(
+                () -> failOnStorageError("Failed to flush the journal asynchronously", error)));
 
     // Open the snapshot store.
     persistedSnapshotStore = storage.getPersistedSnapshotStore();
@@ -327,7 +333,53 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
   }
 
   private void onUncaughtException(final Throwable error) {
+    if (storageFailure != null) {
+      // most likely the failure thrown by failOnStorageError, which already failed this server
+      LOGGER.debug("An uncaught exception occurred after a storage failure", error);
+      return;
+    }
+
     LOGGER.error("An uncaught exception occurred, transition to inactive role", error);
+    failServer(error);
+  }
+
+  /**
+   * Fails this server because a write to its data directory may not have reached the disk, most
+   * likely because syncing it failed. The server transitions to inactive and reports itself as
+   * dead, and never becomes active again.
+   *
+   * <p>Retrying is not an option: after a failed sync, the kernel marks the affected pages as clean
+   * and reports the error only once, so a retried sync succeeds without writing anything. Reading
+   * the data back returns what is in the page cache, not what is on disk. The data on disk can only
+   * be trusted again after a restart, and the replica has to be recovered manually (e.g. by
+   * deleting its data and letting it replicate from the other replicas).
+   *
+   * <p>Must be called on the Raft thread. The caller should throw the returned exception, so that
+   * it does not act on the write that may not be on disk, e.g. acknowledge appended entries.
+   *
+   * @param message describes which write failed
+   * @param cause the failure of the write or its sync
+   * @return the failure to throw
+   */
+  public UnrecoverableException failOnStorageError(final String message, final Throwable cause) {
+    checkThread();
+    final var error =
+        new UnrecoverableException(
+            message
+                + "; data written since the last successful sync may not be on disk, so this replica must be recovered manually",
+            cause);
+    if (storageFailure != null) {
+      storageFailure.addSuppressed(error);
+      return error;
+    }
+
+    LOGGER.error("Failed to persist data, transition to inactive role", error);
+    storageFailure = error;
+    failServer(error);
+    return error;
+  }
+
+  private void failServer(final Throwable error) {
     try {
       // to prevent further operations submitted to the threadcontext to execute
       transition(Role.INACTIVE);
@@ -584,16 +636,9 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
         // leader counts itself in quorum, so in order to commit the leader must persist
         try {
           raftLog.flush();
-        } catch (final FlushException e) {
-          if (LOGGER.isWarnEnabled()) {
-            LOGGER.warn(
-                "Failed to flush commit at index %s, resetting journal to %s and stepping down"
-                    .formatted(commitIndex, previousCommitIndex),
-                e);
-          }
-          transition(Role.FOLLOWER);
-          throw new CommitFailedException(
-              "Failed to commit index %s because of a flush error: %s", commitIndex, e);
+        } catch (final FlushException | RuntimeException e) {
+          throw failOnStorageError(
+              "Failed to flush the journal before committing index %d".formatted(commitIndex), e);
         }
       }
       raftLog.setCommitIndex(commitIndex);
@@ -737,6 +782,14 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
     checkNotNull(role);
 
     if (this.role.role() == role) {
+      return;
+    }
+
+    if (storageFailure != null && role != Role.INACTIVE) {
+      LOGGER.warn(
+          "Expected to transition to {}, but this server failed to persist data and stays inactive",
+          role,
+          storageFailure);
       return;
     }
 

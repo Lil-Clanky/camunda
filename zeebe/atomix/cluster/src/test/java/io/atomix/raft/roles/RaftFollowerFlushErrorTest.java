@@ -9,9 +9,9 @@ package io.atomix.raft.roles;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.atomix.cluster.MemberId;
 import io.atomix.raft.FaultyFlusherConfigurator;
 import io.atomix.raft.RaftRule;
-import io.atomix.raft.RaftServer;
 import io.atomix.raft.RaftServer.Role;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -19,13 +19,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.awaitility.Awaitility;
 import org.junit.Rule;
 import org.junit.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class RaftFollowerFlushErrorTest {
 
-  private static final Logger LOG = LoggerFactory.getLogger(RaftFollowerFlushErrorTest.class);
   private static final int MEMBERS = 3;
+  private static final int FAULTY_MEMBERS = (MEMBERS - 1) / 2;
   public AtomicBoolean isFaulty = new AtomicBoolean(false);
   public AtomicInteger flushFailedCount = new AtomicInteger(0);
 
@@ -34,53 +32,46 @@ public class RaftFollowerFlushErrorTest {
       RaftRule.withBootstrappedNodes(
           MEMBERS,
           new FaultyFlusherConfigurator(
-              (MEMBERS - 1) / 2, isFaulty::get, flushFailedCount::incrementAndGet, false, false));
+              FAULTY_MEMBERS, isFaulty::get, flushFailedCount::incrementAndGet, false, false));
 
   @Test
-  public void shouldAppendEntryOnAllNodesWhenFollowerFailsFlush() throws Throwable {
-    final var leader = raftRule.getLeader().get();
-    // The number of failing nodes is less than the majority: (N - 1)/2;
-    final var failingNodes = (MEMBERS - 1) / 2;
-    // the leader must not be one of the failing nodes,
-    // the priority election config should avoid this happening.
-    assertThat(Integer.parseInt(leader.name())).isGreaterThan(failingNodes);
+  public void shouldFailFollowerWhenItFailsToFlush() throws Throwable {
+    // given
+    final var leader = raftRule.getLeader().orElseThrow();
+    // the priority election config keeps the faulty member "1" from becoming leader
+    assertThat(Integer.parseInt(leader.name())).isGreaterThan(FAULTY_MEMBERS);
+    final var faultyFollower = raftRule.getServer("1");
+    raftRule.awaitSameLogSizeOnAllNodes(raftRule.appendEntry());
 
-    final var index = raftRule.appendEntry();
-    // await all nodes have processed this entry, otherwise we could set the flusher as faulty
-    // before the faulty node had time to append this entry
-    raftRule.awaitSameLogSizeOnAllNodes(index);
-
-    // when
-    // faulty nodes can't flush anymore
-    LOG.debug("Setting flusher to faulty");
+    // when - a single flush fails; like a failed fsync, the error is reported only once
     isFaulty.set(true);
-
-    // then
     final var commitListener = raftRule.appendEntryAsync();
-    final var lastIndex = commitListener.awaitCommit(Duration.ofSeconds(5));
-
-    Awaitility.await("Flush failed for all faulty nodes at least once")
-        .until(() -> flushFailedCount.get() > failingNodes);
-
-    // when
-    // the faulty nodes can flush again successfully
+    Awaitility.await("faulty follower fails to flush").until(() -> flushFailedCount.get() > 0);
     isFaulty.set(false);
 
-    // then
-    // all logs eventually converge
-    raftRule.awaitSameLogSizeOnAllNodes(lastIndex);
-
-    // all members are still registered
-    assertThat(raftRule.getMemberLogs().size()).isEqualTo(MEMBERS);
-    Awaitility.await("Until all members are FOLLOWER or LEADER")
+    // then - the faulty follower fails instead of retrying the flush
+    Awaitility.await("faulty follower fails")
         .untilAsserted(
             () -> {
-              // all members are either LEADER or FOLLOWER
-              final var roles = raftRule.getServers().stream().map(RaftServer::getRole).toList();
-              assertThat(roles)
-                  .withFailMessage(
-                      String.format("Expected all members to be FOLLOWER or LEADER, got %s", roles))
-                  .allMatch(r -> r == Role.FOLLOWER || r == Role.LEADER);
+              assertThat(faultyFollower.getRole()).isEqualTo(Role.INACTIVE);
+              assertThat(faultyFollower.getContext().getHealthReport().isDead()).isTrue();
             });
+    final var issue = faultyFollower.getContext().getHealthReport().getIssue();
+    assertThat(issue).isNotNull();
+    assertThat(issue.throwable())
+        .hasMessageContaining("Failed to flush the journal before acknowledging entries");
+
+    // then - the remaining members still commit, but the faulty follower never acknowledges again
+    final var committedIndex = commitListener.awaitCommit(Duration.ofSeconds(5));
+    final var nextIndex = raftRule.appendEntry();
+    assertThat(nextIndex).isGreaterThan(committedIndex);
+    assertThat(faultyFollower.getRole()).isEqualTo(Role.INACTIVE);
+    assertThat(
+            leader
+                .getContext()
+                .getCluster()
+                .getMemberContext(MemberId.from(faultyFollower.name()))
+                .getMatchIndex())
+        .isLessThan(committedIndex);
   }
 }

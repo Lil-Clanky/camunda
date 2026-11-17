@@ -51,6 +51,8 @@ public final class SegmentedJournal implements Journal {
   private final StampedLock rwlock = new StampedLock();
   private final SegmentsManager segments;
   private final JournalMetaStore metaStore;
+  // the first failed flush, after which no flush may succeed anymore
+  private volatile @Nullable Throwable syncFailure;
 
   SegmentedJournal(
       final JournalIndex journalIndex,
@@ -158,13 +160,31 @@ public final class SegmentedJournal implements Journal {
     return writer.getNextIndex() - getFirstIndex() == 0;
   }
 
+  /**
+   * Flushes the journal, unless a previous flush failed.
+   *
+   * <p>A failed flush, or any other failed sync of the journal's files (e.g. when creating a
+   * segment), may leave records only in the page cache: the kernel marks their pages clean and
+   * reports the error only once, so a later flush has nothing left to write and succeeds. To never
+   * treat these records as durable, every flush after a failed one fails too, and the last flushed
+   * index stays at the last flush that succeeded. Recovering requires restarting from the data that
+   * is actually on disk.
+   */
   @Override
   public void flush() throws FlushException {
+    final var previousFailure = syncFailure;
+    if (previousFailure != null) {
+      throw new FlushException(
+          "Expected to flush the journal, but a previous flush failed; records written since the last successful flush may not be on disk",
+          previousFailure);
+    }
+
     if (!isOpen() || isEmpty()) {
       LOGGER.debug("Skipped journal flush as it is either closed or empty");
       return;
     }
 
+    FlushException failure = null;
     try (final var ignored = journalMetrics.observeJournalFlush()) {
       // grabbing the read lock here will prevent write-exclusive operations such as deleteAfter and
       // reset from modifying the segments, allowing us to properly determine which segments must be
@@ -178,10 +198,35 @@ public final class SegmentedJournal implements Journal {
       } finally {
         rwlock.unlockRead(stamp);
       }
-    } finally {
-      if (writer.getLastFlushedIndex() > 0) {
-        metaStore.storeLastFlushedIndex((writer.getLastFlushedIndex()));
+    } catch (final FlushException e) {
+      failure = e;
+    }
+
+    // store whatever was flushed, even if a later segment failed to flush
+    final var lastFlushedIndex = writer.getLastFlushedIndex();
+    if (lastFlushedIndex > 0) {
+      try {
+        metaStore.storeLastFlushedIndex(lastFlushedIndex);
+      } catch (final RuntimeException e) {
+        if (failure == null) {
+          failure =
+              new FlushException(
+                  "Failed to store the last flushed index %d".formatted(lastFlushedIndex), e);
+        } else {
+          failure.addSuppressed(e);
+        }
       }
+    }
+
+    if (failure != null) {
+      recordSyncFailure(failure);
+      throw failure;
+    }
+  }
+
+  private void recordSyncFailure(final Throwable failure) {
+    if (syncFailure == null) {
+      syncFailure = failure;
     }
   }
 

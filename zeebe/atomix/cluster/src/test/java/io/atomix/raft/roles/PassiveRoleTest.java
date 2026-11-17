@@ -17,6 +17,8 @@ package io.atomix.raft.roles;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -46,9 +48,11 @@ import io.camunda.zeebe.journal.JournalException.InvalidChecksum;
 import io.camunda.zeebe.snapshots.PersistedSnapshot;
 import io.camunda.zeebe.snapshots.ReceivableSnapshotStore;
 import io.camunda.zeebe.snapshots.ReceivedSnapshot;
+import io.camunda.zeebe.util.exception.UnrecoverableException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -373,14 +377,44 @@ public class PassiveRoleTest {
   }
 
   @Test
-  public void shouldRollBackConfigurationWhenTruncatingTheLogFailsToFlush()
-      throws CheckedJournalException {
-    // given - the journal is truncated before the flush that fails, so the entry is gone
+  public void shouldFailServerWhenFlushingAppendedEntriesFails() throws CheckedJournalException {
+    // given
+    final var flushError = new FlushException(new IOException("Input/output error"));
+    final var failure = new UnrecoverableException("failed");
+    doThrow(flushError).when(log).flush();
+    when(ctx.failOnStorageError(any(), any())).thenReturn(failure);
+    when(log.append(any(ReplicatableJournalRecord.class)))
+        .thenReturn(mock(IndexedRaftLogEntry.class));
+    final var request =
+        VersionedAppendRequest.builder()
+            .withTerm(1)
+            .withLeader(MemberId.anonymous())
+            .withPrevLogTerm(0)
+            .withPrevLogIndex(0)
+            .withEntries(List.of(new ReplicatableJournalRecord(1, 1, 1, new byte[1])))
+            .withCommitIndex(1)
+            .build();
+
+    // when
+    final var response = role.handleAppend(ProtocolVersionHandler.transform(request));
+
+    // then - the entry is not acknowledged, and the server fails instead of waiting for a resend
+    assertThat(response).failsWithin(Duration.ZERO).withThrowableThat().withCause(failure);
+    verify(ctx).failOnStorageError(any(), eq(flushError));
+    verify(ctx, never()).setCommitIndex(anyLong());
+  }
+
+  @Test
+  public void shouldFailServerWhenTruncatingTheLogFailsToFlush() throws CheckedJournalException {
+    // given
+    final var flushError = new FlushException(new IOException("Input/output error"));
+    final var failure = new UnrecoverableException("failed");
     final var lastEntry = mock(IndexedRaftLogEntry.class);
     when(lastEntry.index()).thenReturn(1L);
     when(lastEntry.term()).thenReturn(2L);
     when(log.getLastEntry()).thenReturn(lastEntry);
-    doThrow(new FlushException(new IOException("flush failed"))).when(log).deleteAfter(0);
+    doThrow(flushError).when(log).deleteAfter(0);
+    when(ctx.failOnStorageError(any(), any())).thenReturn(failure);
     final var request =
         VersionedAppendRequest.builder()
             .withTerm(3)
@@ -392,10 +426,12 @@ public class PassiveRoleTest {
             .build();
 
     // when
-    role.handleAppend(ProtocolVersionHandler.transform(request)).join();
+    final var response = role.handleAppend(ProtocolVersionHandler.transform(request));
 
-    // then - the retry would not truncate again, so the configuration must be dropped now
-    verify(ctx.getCluster()).dropConfigurationsWithoutLogEntry(0);
+    // then - the leader's entry is neither appended nor acknowledged
+    assertThat(response).failsWithin(Duration.ZERO).withThrowableThat().withCause(failure);
+    verify(ctx).failOnStorageError(any(), eq(flushError));
+    verify(log, never()).append(any(ReplicatableJournalRecord.class));
   }
 
   @Test

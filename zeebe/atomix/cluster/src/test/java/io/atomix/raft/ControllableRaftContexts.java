@@ -457,7 +457,7 @@ public final class ControllableRaftContexts {
     }
   }
 
-  /** Makes the next flush of the given member's log fail, like a transient I/O error. */
+  /** Makes the next flush of the given member's log fail, like a failed fsync. */
   public void failNextFlush(final MemberId memberId) {
     failNextFlush.get(memberId).set(true);
   }

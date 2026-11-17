@@ -11,27 +11,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.atomix.raft.FaultyFlusherConfigurator;
-import io.atomix.raft.RaftException.AppendFailureException;
 import io.atomix.raft.RaftRule;
+import io.atomix.raft.RaftServer.Role;
 import java.time.Duration;
 import java.util.Collection;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
+import org.awaitility.Awaitility;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameter;
 import org.junit.runners.Parameterized.Parameters;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 @RunWith(Parameterized.class)
 public class RaftLeaderFlushErrorTest {
 
-  private static final Logger LOG = LoggerFactory.getLogger(RaftLeaderFlushErrorTest.class);
   private static final int MEMBERS = 3;
 
   @Parameter public boolean withDataLoss;
@@ -71,42 +68,36 @@ public class RaftLeaderFlushErrorTest {
   }
 
   @Test
-  public void shouldTransitionToFollowerWhenLeaderFailsToFlush() throws Exception {
+  public void shouldFailLeaderWhenItFailsToFlush() throws Exception {
     // given
-    final var leader = raftRule.getLeader().get();
-    // check that the leader has a faulty flusher
+    final var leader = raftRule.getLeader().orElseThrow();
+    // the priority election config makes the faulty member "1" the leader
     assertThat(leader.name()).isEqualTo("1");
-
-    // get last index
     raftRule.appendEntry();
 
-    // flusher fails to flush
+    // when - a single flush fails; like a failed fsync, the error is reported only once
     isFaulty.set(true);
-
-    LOG.info("Leader flusher set to faulty");
-    // when
     final var commitListener = raftRule.appendEntryAsync();
-
-    // then
-    assertThatThrownBy(() -> commitListener.awaitCommit(Duration.ofSeconds(2)))
-        .isInstanceOf(ExecutionException.class)
-        .hasCauseInstanceOf(AppendFailureException.class);
-
-    // when
+    Awaitility.await("leader fails to flush").until(() -> flushFailedCount.get() > 0);
     isFaulty.set(false);
-    LOG.info("Leader flusher is not faulty anymore");
 
-    assertThatThrownBy(() -> commitListener.awaitCommit(Duration.ofSeconds(2)))
-        .isInstanceOf(ExecutionException.class)
-        .hasCauseInstanceOf(AppendFailureException.class);
+    // then - the leader fails instead of stepping down and keeping the entries
+    assertThatThrownBy(() -> commitListener.awaitCommit(Duration.ofSeconds(5)))
+        .isInstanceOf(Exception.class);
+    Awaitility.await("leader fails")
+        .untilAsserted(
+            () -> {
+              assertThat(leader.getRole()).isEqualTo(Role.INACTIVE);
+              assertThat(leader.getContext().getHealthReport().isDead()).isTrue();
+            });
+    final var issue = leader.getContext().getHealthReport().getIssue();
+    assertThat(issue).isNotNull();
+    assertThat(issue.throwable())
+        .hasMessageContaining("Failed to flush the journal before committing index");
 
-    // then
-    // await new leader
+    // then - the remaining members elect a new leader and keep committing
     raftRule.awaitNewLeader();
-    LOG.debug("appending a new entry after leader change");
-    // appending a new entry succeeds
-    final var finalIndex = raftRule.appendEntry();
-    // all nodes have the same entry
-    raftRule.awaitSameLogSizeOnAllNodes(finalIndex);
+    raftRule.appendEntry();
+    assertThat(leader.getRole()).isEqualTo(Role.INACTIVE);
   }
 }

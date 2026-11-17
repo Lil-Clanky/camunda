@@ -30,6 +30,7 @@ import io.camunda.zeebe.journal.JournalRecord;
 import io.camunda.zeebe.journal.SegmentInfo;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.Closeable;
+import java.util.function.Consumer;
 import org.agrona.CloseHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -208,6 +209,16 @@ public final class RaftLog implements Closeable {
    */
   public void flush() throws FlushException {
     flusher.flush(journal);
+  }
+
+  /**
+   * Sets the listener to notify when the configured {@link RaftLogFlusher} fails to flush outside
+   * of {@link #flush()}, e.g. a delayed flush.
+   *
+   * @param listener called with the failure, possibly from another thread
+   */
+  public void setAsyncFlushFailureListener(final Consumer<Throwable> listener) {
+    flusher.setAsyncFailureListener(listener);
   }
 
   /**

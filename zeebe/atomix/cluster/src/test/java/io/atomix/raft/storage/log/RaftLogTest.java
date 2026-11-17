@@ -45,6 +45,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.Instant;
 import java.util.Set;
+import java.util.function.Consumer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.AutoClose;
@@ -265,6 +266,20 @@ class RaftLogTest {
 
       // then
       verify(flusher, times(1)).flush(journal);
+    }
+
+    @Test
+    void shouldReportAsyncFlushFailuresOfFlusher() {
+      // given
+      final var flusher = mock(RaftLogFlusher.class);
+      final var log = new RaftLog(mock(Journal.class), flusher);
+      final Consumer<Throwable> listener = error -> {};
+
+      // when
+      log.setAsyncFlushFailureListener(listener);
+
+      // then
+      verify(flusher).setAsyncFailureListener(listener);
     }
 
     @Test

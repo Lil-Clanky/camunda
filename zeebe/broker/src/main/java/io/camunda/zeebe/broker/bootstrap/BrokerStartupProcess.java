@@ -48,6 +48,8 @@ public final class BrokerStartupProcess {
     final var config = startupContext.getBrokerConfiguration();
     final var result = new ArrayList<StartupStep<BrokerStartupContext>>();
 
+    // must be executed before anything reads the data directory
+    result.add(new DropDataDirectoryPageCacheStep());
     result.add(new ClusterServicesStep());
     result.add(new ClusterConfigurationManagerStep());
 

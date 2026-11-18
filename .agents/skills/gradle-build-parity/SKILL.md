@@ -18,22 +18,13 @@ usage, published metadata, packaged artifacts.
 
 ## CI Gradle validation (why Maven stays the gate)
 
-Unified CI does not select an application-test implementation with a `build-tool` output. Maven
-remains the application-test path for every event. The Gradle job combines the existing
-`java-code-changes` and `gradle-changes` outputs to trigger focused `testClasses` and
-distribution-parity checks when Java, Maven, Gradle, or relevant CI build inputs change, as
-specified in ADR D4. These checks supplement rather than replace the existing Maven CI path.
-
-The focused compile and distribution-parity check in Unified CI is part of `check-results` and
-blocks pull requests and merge groups. It runs on GCP and downloads the Maven SNAPSHOT archive;
-fork PRs without GCS credentials use the GitHub artifact fallback. The Gradle check extracts the
-attached Maven distribution ZIP and compares it with Gradle's `distZip` output. The separate
-experimental isolated-project check in `gradle-ci.yml` remains non-blocking; failures on `main`
-send a Slack notification (see the ADR).
-
-This keeps the Gradle signal scoped: it validates compilation and packaged artifact names, but it
-is not a Gradle application-test suite. Maven remains the application-test path for pull requests,
-merge groups, protected-branch pushes, schedules, and manual runs.
+Unified CI keeps Maven as the application-test path. Focused Gradle checks run when
+`java-code-changes` or `gradle-changes` is true and are part of `check-results`: `testClasses` runs,
+and the gzipped Gradle `distTar` is compared directly with Maven's distball. GCP runs use shared
+artifacts; fork PRs use the GitHub artifact fallback. The separate isolated-project check in
+`gradle-ci.yml` remains non-blocking and sends Slack notifications for failures on `main` (see the
+ADR). These focused checks validate compilation and packaged artifact names, not Gradle application
+tests.
 
 ## Fix Workflow
 
@@ -45,9 +36,9 @@ merge groups, protected-branch pushes, schedules, and manual runs.
    Then always run `./gradlew testClasses` from the repository root and do not consider the task
    finished until it completes successfully. This catches failures in other Gradle modules that
    are not exercised by the affected module's compile task.
-5. For every Gradle change, build the Gradle distribution and compare its archive with the Maven
-   archive using `compare-dist.py`. The CI gate compiles `testClasses`, packages `distZip`, and
-   uploads the Gradle outputs, and `gradle-distribution-parity-check` compares the archives.
+5. For every Gradle change, build the distribution and compare it with Maven using
+   `compare-dist.py`. CI compiles and packages in `gradle-compile-check`, then compares the
+   archives in `gradle-distribution-parity-check`.
 6. Preserve already-fixed conventions; avoid regressions.
 
 ### Rebase onto main before Gradle parity work
@@ -106,10 +97,11 @@ The rebase audit identifies what changed. It does not replace the porting proced
 
 ### Gradle CI gates
 
-On an eligible Gradle CI path, `gradle-compile-check` runs the root `testClasses` lifecycle task,
-builds `:camunda-zeebe:distZip`, and writes the distribution dependency report. The
-`gradle-distribution-parity-check` job then compares them with the attached Maven distribution ZIP
-from the SNAPSHOT archive using `compare-dist.py`. These jobs form the Gradle build gate; do not describe this path as a full Gradle test-suite run.
+On an eligible Gradle CI path, `gradle-compile-check` runs root `testClasses`, then packages the
+gzipped archive with `-Pdist.tar.gzip=true :camunda-zeebe:distTar` and writes the dependency report.
+`gradle-distribution-parity-check` compares that archive directly with the Maven distball using
+`compare-dist.py`. Together, these jobs form the build gate; they are not a full Gradle test-suite
+run.
 
 **Before investigating CI failures: always rebase onto main first.** CI runs on the merge
 commit, so Gradle build files apply against main's Java sources, which may differ from the
@@ -362,21 +354,27 @@ routinely. Prefer running it per module on the module you're fixing.
 
 Compares the packaged distribution produced by the `dist/` project between Gradle and Maven.
 `compare-module-deps.py` diffs a single module's resolved classpath; `compare-dist.py` checks
-the actual shipped distribution. In ZIP mode it compares the versioned root and JAR
-names/versions under `lib/`; other file-content differences are intentionally ignored. When
-`dist/build/reports/dist-dependencies.json` is present or passed with `--gradle-manifest`,
-patch-only JAR differences are ignored only for Gradle-transitive artifacts. In the legacy
-tar/directory mode it compares the JAR names and versions under `lib/`. Explicit artifact-inventory
-exceptions are listed in `.github/scripts/gradle/distribution-parity-exceptions.json`; update that
-file rather than hardcoding another exception in the comparator.
+the actual shipped distribution. ZIP and gzipped TAR archive modes compare the versioned root and
+JAR names/versions under `lib/`; other file-content differences are intentionally ignored. When
+`dist/build/reports/dist-dependencies.json` is present or passed with `--gradle-manifest`, patch-only
+JAR differences are ignored only for Gradle-transitive artifacts. The legacy tar/directory mode
+compares a Gradle TAR with an exploded Maven distribution. Explicit artifact-inventory exceptions
+are listed in `.github/scripts/gradle/distribution-parity-exceptions.json`; update that file rather
+than hardcoding another exception in the comparator.
 
 ```bash
-# Full ZIP archive comparison
+# CI-style gzipped TAR archive comparison
+python3 .github/scripts/gradle/compare-dist.py \
+    dist/build/distributions/camunda-zeebe-*.tar.gz \
+    dist/target/camunda-zeebe-*.tar.gz \
+    --gradle-manifest dist/build/reports/dist-dependencies.json
+
+# ZIP archive comparison (also supported)
 python3 .github/scripts/gradle/compare-dist.py \
     dist/build/distributions/camunda-zeebe-*.zip \
     dist/target/camunda-zeebe-*.zip
 
-# JAR/version comparison against an exploded Maven distribution
+# Compare against an exploded Maven distribution
 python3 .github/scripts/gradle/compare-dist.py \
     dist/build/distributions/camunda-zeebe-*.tar.gz \
     dist/target/camunda-zeebe

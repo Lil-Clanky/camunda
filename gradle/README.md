@@ -65,28 +65,28 @@ not be treated as a user-ready distribution.
 For backend parity, the dependency manifest and archive can be built with:
 
 ```bash
-./gradlew --console=plain --parallel -Pskip.fe.build=true \
-  testClasses :camunda-zeebe:distZip
+./gradlew --console=plain --parallel -Pskip.fe.build=true -Pdist.tar.gzip=true \
+  testClasses :camunda-zeebe:distTar
 ./gradlew --no-configuration-cache --console=plain -Pskip.fe.build=true \
   :camunda-zeebe:writeDistDependencyReport
 python3 .github/scripts/gradle/compare-dist.py \
-  dist/build/distributions/camunda-zeebe-*.zip \
-  dist/target/camunda-zeebe-*.zip \
+  dist/build/distributions/camunda-zeebe-*.tar.gz \
+  dist/target/camunda-zeebe-*.tar.gz \
   --gradle-manifest dist/build/reports/dist-dependencies.json
 ```
 
-The Maven ZIP in `dist/target/` must be produced from the **same source and POM revision** as the
-Gradle archive. If needed, build it with Maven before comparing:
+The Maven distball in `dist/target/` must be produced from the **same source and POM revision** as
+the Gradle archive. If needed, build it with Maven before comparing:
 
 ```bash
 ./mvnw -pl dist -am package -DskipTests -DskipChecks \
   -PskipFrontendBuild -Dskip.fe.build
 ```
 
-The comparator checks the versioned ZIP root and bundled JAR names and versions. It does not compare
-all archive file contents, scripts, or file permissions. Its successful result is an inventory parity
-signal, not byte-for-byte distribution equivalence. The Gradle manifest allows the comparator to
-apply the documented policy for transitive patch-version differences.
+The comparator checks the versioned archive root and bundled JAR names and versions. It does not
+compare all archive file contents, scripts, or file permissions. Its successful result is an
+inventory parity signal, not byte-for-byte distribution equivalence. The Gradle manifest lets the
+comparator apply the documented policy for transitive patch-version differences.
 
 ## Useful properties
 

@@ -168,22 +168,23 @@ For a module build change, use the affected module only for the inner loop:
 Before concluding, complete the Gradle CI-shaped validation from the repository root:
 
 ```bash
-./gradlew --no-daemon --console=plain --parallel -Pskip.fe.build \
-  testClasses :camunda-zeebe:distZip
+./gradlew --no-daemon --console=plain --parallel -Pskip.fe.build -Pdist.tar.gzip=true \
+  testClasses :camunda-zeebe:distTar
 ```
 
 Compare the Gradle archive with the Maven archive:
 
 ```bash
 python3 .github/scripts/gradle/compare-dist.py \
-  dist/build/distributions/camunda-zeebe-*.zip \
-  dist/target/camunda-zeebe-*.zip
+  dist/build/distributions/camunda-zeebe-*.tar.gz \
+  dist/target/camunda-zeebe-*.tar.gz \
+  --gradle-manifest dist/build/reports/dist-dependencies.json
 ```
 
-Every Gradle change must pass this distribution parity check. CI uses the same `testClasses` plus
-distribution build gate, followed by the required distribution parity job. The current CI artifacts
-are ZIPs; `compare-dist.py` also supports tar.gz/exploded distribution comparisons. The Gradle path
-is not a full test-suite run.
+Every Gradle change must pass this distribution parity check. CI runs `testClasses` and packages a
+gzipped `distTar`, then compares it directly with the Maven distball in a separate job. The
+comparator also supports ZIP-to-ZIP and legacy Gradle-tar-to-exploded-Maven comparisons. The Gradle
+path is not a full test-suite run.
 
 For a documentation-only porting audit, no build is necessary, but run `git diff --check` on the
 changed reference files.

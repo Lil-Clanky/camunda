@@ -328,7 +328,12 @@ class SegmentsManagerTest {
       inOrder.verify(metaStore).resetLastFlushedIndex();
 
       Collections.reverse(loadedSegments);
-      loadedSegments.forEach(s -> inOrder.verify(s).delete());
+      loadedSegments.forEach(
+          s -> {
+            inOrder.verify(s).delete();
+            // whether its file was renamed, to know whether to forget it
+            inOrder.verify(s).isMarkedForDeletion();
+          });
       inOrder.verifyNoMoreInteractions();
     }
   }

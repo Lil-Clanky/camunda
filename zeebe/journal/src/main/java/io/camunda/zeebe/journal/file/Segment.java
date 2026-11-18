@@ -254,11 +254,23 @@ final class Segment implements AutoCloseable, FlushableSegment {
 
   /** Deletes the segment. */
   void delete() {
-    open = false;
-    markForDeletion();
+    try {
+      markForDeletion();
+    } finally {
+      // Once renamed, the file is no longer part of the journal, even if syncing the directory
+      // failed. If the rename failed, the segment still is, and stays open.
+      if (markedForDeletion) {
+        open = false;
+      }
+    }
     if (readers.isEmpty()) {
       safeDelete();
     }
+  }
+
+  /** Whether the segment's file was renamed for deletion, i.e. is no longer part of the journal. */
+  boolean isMarkedForDeletion() {
+    return markedForDeletion;
   }
 
   private void safeDelete() {

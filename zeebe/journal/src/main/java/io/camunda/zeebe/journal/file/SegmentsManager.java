@@ -320,10 +320,7 @@ final class SegmentsManager implements AutoCloseable {
       // underlying buffer
       //noinspection resource
       final var segment = it.next();
-      // remove it first, as it is closed even if deleting it fails
-      it.remove();
-      journalMetrics.decSegmentCount();
-      segment.delete();
+      deleteSegment(segment, it);
     }
 
     final SegmentDescriptor descriptor =
@@ -344,11 +341,18 @@ final class SegmentsManager implements AutoCloseable {
    * @param segment The segment to remove.
    */
   void removeSegment(final Segment segment) {
-    //noinspection resource
-    segments.remove(segment.index());
-    journalMetrics.decSegmentCount();
-    segment.delete();
-    resetCurrentSegment();
+    // Only forget the segment once its file is renamed: if the rename failed, the file is still
+    // part of the journal, and a restart would bring back the records deleted with it.
+    try {
+      segment.delete();
+    } finally {
+      if (segment.isMarkedForDeletion()) {
+        //noinspection resource
+        segments.remove(segment.index());
+        journalMetrics.decSegmentCount();
+        resetCurrentSegment();
+      }
+    }
   }
 
   /** Resets the current segment, creating a new segment if necessary. */
@@ -424,6 +428,23 @@ final class SegmentsManager implements AutoCloseable {
     // Then use its first index to get the tail map. We can't get the tail map directly using the
     // given index, because it may be in the middle of a segment.
     return Collections.unmodifiableSortedMap(segments.tailMap(segment.index(), true)); // inclusive
+  }
+
+  /**
+   * Deletes the segment, and removes it from the segments once its file is renamed for deletion,
+   * even if deleting it fails afterwards. A failure stops deleting further segments: if the rename
+   * failed, the file is still part of the journal, and deleting the ones after it would leave a
+   * gap.
+   */
+  private void deleteSegment(final Segment segment, final Iterator<Segment> segments) {
+    try {
+      segment.delete();
+    } finally {
+      if (segment.isMarkedForDeletion()) {
+        segments.remove();
+        journalMetrics.decSegmentCount();
+      }
+    }
   }
 
   private UninitializedSegment createUninitializedSegment(final SegmentDescriptor descriptor) {

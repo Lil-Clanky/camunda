@@ -41,6 +41,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -106,6 +107,29 @@ class SegmentedJournalTest {
 
     // then - first ASQN should be 30 (first entry in segment 2)
     assertThat(tailSegments.firstAsqn()).isPresent().hasValue(30L);
+  }
+
+  @Test
+  void shouldKeepFlushedIndexWhenResetFails() throws Exception {
+    // given - a flushed record, and a first segment that cannot be renamed for deletion
+    journalFactory = new TestJournalFactory(5);
+    final var segments = journalFactory.segmentsManager(directory);
+    journal = journalFactory.journal(segments);
+    journal.append(journalFactory.entry());
+    journal.flush();
+    final var renameTarget = segments.getFirstSegment().file().getFileMarkedForDeletion();
+    Files.createFile(renameTarget);
+
+    // when
+    assertThatThrownBy(() -> journal.reset(101))
+        .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+    Files.delete(renameTarget);
+    journal.close();
+
+    // then - closing flushed the old segment, without claiming index 100 as flushed
+    try (final var reopened = journalFactory.journal(journalFactory.segmentsManager(directory))) {
+      assertThat(reopened.getLastIndex()).isOne();
+    }
   }
 
   @Test

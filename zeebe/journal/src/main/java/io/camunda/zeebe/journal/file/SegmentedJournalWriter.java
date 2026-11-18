@@ -107,10 +107,12 @@ final class SegmentedJournalWriter {
   }
 
   void reset(final long index) {
-    lastFlushedIndex = index - 1;
-    metaStore.storeLastFlushedIndex(index - 1);
+    // Reset the segments first, which also clears the stored last flushed index: if that fails,
+    // the old segments may still be live, and claiming the new index as flushed would make a later
+    // flush store an index the log never contained.
     currentSegment = segments.resetSegments(index);
     currentWriter = currentSegment.writer();
+    lastFlushedIndex = index - 1;
   }
 
   /**

@@ -7,15 +7,18 @@
  */
 package io.camunda.zeebe.engine.processing.policy;
 
+import io.camunda.zeebe.auth.Authorization;
 import io.camunda.zeebe.engine.processing.Rejection;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.StateWriter;
 import io.camunda.zeebe.engine.state.immutable.PolicyUpdateState;
 import io.camunda.zeebe.engine.state.policy.PersistedPolicyUpdate;
+import io.camunda.zeebe.protocol.impl.encoding.AuthInfo;
 import io.camunda.zeebe.protocol.record.RecordMetadataDecoder;
 import io.camunda.zeebe.protocol.record.RejectionType;
 import io.camunda.zeebe.protocol.record.intent.PolicyUpdateIntent;
 import io.camunda.zeebe.stream.api.FollowUpCommandMetadata;
 import io.camunda.zeebe.stream.api.records.TypedRecord;
+import java.util.Map;
 import java.util.Optional;
 import org.jspecify.annotations.NullMarked;
 
@@ -35,6 +38,9 @@ import org.jspecify.annotations.NullMarked;
 @NullMarked
 public final class PolicyUpdateBehavior {
 
+  private static final AuthInfo ANONYMOUS_AUTH_INFO =
+      AuthInfo.ofClaims(Map.of(Authorization.AUTHORIZED_ANONYMOUS_USER, true));
+
   private final PolicyUpdateState policyUpdateState;
   private final StateWriter stateWriter;
 
@@ -44,10 +50,16 @@ public final class PolicyUpdateBehavior {
     this.stateWriter = stateWriter;
   }
 
-  /** The metadata for an identity command of the update. */
+  /**
+   * The metadata for an identity command of the update. The reference makes the command count as a
+   * user command rather than an internal one, so it is written as anonymous to keep the trusted
+   * handling of an internal command: no authorization check and access to all tenants. Only {@link
+   * PolicyUpdateApplyChunkProcessor} writes these commands, from an internal command.
+   */
   static FollowUpCommandMetadata metadataFor(final PersistedPolicyUpdate update) {
     return FollowUpCommandMetadata.of(
-        builder -> builder.batchOperationReference(update.getUpdateKey()));
+        builder ->
+            builder.batchOperationReference(update.getUpdateKey()).authInfo(ANONYMOUS_AUTH_INFO));
   }
 
   /** Whether the identity command was written for a policy update. */

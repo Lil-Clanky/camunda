@@ -24,6 +24,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
+import com.google.common.util.concurrent.Uninterruptibles;
 import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.JournalException.InvalidAsqn;
 import io.camunda.zeebe.journal.JournalException.OutOfDiskSpace;
@@ -65,6 +66,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.AutoClose;
 import org.junit.jupiter.api.Test;
@@ -127,6 +129,45 @@ class SegmentedJournalTest {
     journal.close();
 
     // then - closing flushed the old segment, without claiming index 100 as flushed
+    try (final var reopened = journalFactory.journal(journalFactory.segmentsManager(directory))) {
+      assertThat(reopened.getLastIndex()).isOne();
+    }
+  }
+
+  @Test
+  void shouldNotStoreFlushedIndexPastConcurrentTruncation() throws Exception {
+    // given - a flush, e.g. a delayed one, held just before it stores the last flushed index 3
+    journalFactory = new TestJournalFactory(5);
+    final var segments = journalFactory.segmentsManager(directory);
+    journal = journalFactory.journal(segments);
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    final var storing = new CountDownLatch(1);
+    final var store = new CountDownLatch(1);
+    journalFactory
+        .metaStore()
+        .setOnStoreFlushedIndex(
+            () -> {
+              journalFactory.metaStore().setOnStoreFlushedIndex(null);
+              storing.countDown();
+              Uninterruptibles.awaitUninterruptibly(store);
+            });
+    final var flush = CompletableFuture.runAsync(CheckedRunnable.toUnchecked(journal::flush));
+    storing.await();
+
+    // when - the journal is truncated to index 1 meanwhile
+    final var truncating = new Thread(() -> journal.deleteAfter(1));
+    truncating.start();
+    Awaitility.await("truncation waits for the flush")
+        .until(() -> truncating.getState() == Thread.State.WAITING || !truncating.isAlive());
+    store.countDown();
+    flush.get();
+    truncating.join();
+
+    // then - after a crash, without another flush, the journal still starts
+    segments.getFirstSegment().flush();
+    segments.close();
     try (final var reopened = journalFactory.journal(journalFactory.segmentsManager(directory))) {
       assertThat(reopened.getLastIndex()).isOne();
     }

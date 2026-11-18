@@ -247,6 +247,68 @@ class SegmentedJournalTest {
   }
 
   @Test
+  void shouldRejectWritesAfterNextSegmentFailedToSync() throws Exception {
+    // given - creating the next segment in the background fails to sync its directory
+    journalFactory = new TestJournalFactory(3);
+    final var loader = spy(journalFactory.segmentLoader());
+    doAnswer(
+            call -> {
+              final Path segmentFile = call.getArgument(0);
+              try (final var fileUtil = mockStatic(FileUtil.class, CALLS_REAL_METHODS)) {
+                fileUtil
+                    .when(() -> FileUtil.flushDirectory(segmentFile.getParent()))
+                    .thenThrow(new IOException("Input/output error"));
+                return call.callRealMethod();
+              }
+            })
+        .when(loader)
+        .createUninitializedSegment(any(), any(), any());
+    final var segments = journalFactory.segmentsManager(directory, loader);
+    journal = journalFactory.journal(segments);
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    // the first record in the second segment starts preparing the third one
+    journal.append(journalFactory.entry());
+    Awaitility.await("next segment failed to sync")
+        .until(() -> segments.getBackgroundSyncFailure() != null);
+    assertThatThrownBy(journal::flush).isInstanceOf(FlushException.class);
+
+    // when - the second segment still has room, so the append does not need the third one
+    final var appendFailure = catchThrowable(() -> journal.append(journalFactory.entry()));
+
+    // then
+    assertThat(appendFailure).isInstanceOf(SyncFailed.class);
+    assertThat(journal.getLastIndex()).isEqualTo(4);
+  }
+
+  @Test
+  void shouldRejectWritesAfterDeletedSegmentsFailedToSync() {
+    // given - one entry per segment, deleted in the calling thread
+    journalFactory = new TestJournalFactory(1);
+    final var segments = journalFactory.segmentsManager(directory, Runnable::run);
+    journal = journalFactory.journal(segments);
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    try (final var fileUtil = mockStatic(FileUtil.class, CALLS_REAL_METHODS)) {
+      fileUtil
+          .when(() -> FileUtil.flushDirectory(any()))
+          .thenThrow(new IOException("Input/output error"));
+      journal.deleteUntil(2);
+    }
+    assertThatThrownBy(() -> journal.deleteUntil(4)).isInstanceOf(SyncFailed.class);
+
+    // when
+    final var appendFailure = catchThrowable(() -> journal.append(journalFactory.entry()));
+
+    // then
+    assertThat(appendFailure).isInstanceOf(SyncFailed.class);
+    assertThat(journal.getLastIndex()).isEqualTo(4);
+  }
+
+  @Test
   void shouldNotStoreFlushedIndexPastConcurrentTruncation() throws Exception {
     // given - a flush, e.g. a delayed one, held just before it stores the last flushed index 3
     journalFactory = new TestJournalFactory(5);

@@ -330,7 +330,11 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
   public void write(final ByteBuffer buffer, final FileChannel file, final boolean force)
       throws IOException {
     buffer.position(0);
-    file.write(buffer, 0);
+    // a write may write only part of the buffer, e.g. when the file would exceed a size limit
+    long position = 0;
+    while (buffer.hasRemaining()) {
+      position += file.write(buffer, position);
+    }
     if (force) {
       file.force(true);
     }

@@ -21,10 +21,13 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.junit.jupiter.api.Named.named;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import io.atomix.cluster.MemberId;
 import io.atomix.raft.cluster.RaftMember;
@@ -34,7 +37,10 @@ import io.atomix.raft.storage.RaftStorage;
 import io.atomix.raft.storage.StorageException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -342,6 +348,33 @@ class MetaStoreTest {
       // then - no later write is attempted, so none can seem to succeed
       assertThat(thrown).isInstanceOf(StorageException.class).hasCause(error);
       verify(failingStore, times(1)).write(any(), any(), anyBoolean());
+    }
+
+    @Test
+    void shouldWriteWholeBufferWhenWritesArePartial() throws IOException {
+      // given - a channel that writes at most 2 bytes per call
+      final var buffer = ByteBuffer.wrap(new byte[] {1, 2, 3, 4, 5});
+      final var written = new ByteArrayOutputStream();
+      final var channel = mock(FileChannel.class);
+      when(channel.write(any(ByteBuffer.class), anyLong()))
+          .thenAnswer(
+              invocation -> {
+                final ByteBuffer source = invocation.getArgument(0);
+                final long position = invocation.getArgument(1);
+                assertThat(position).isEqualTo(written.size());
+                final var length = Math.min(2, source.remaining());
+                for (int i = 0; i < length; i++) {
+                  written.write(source.get());
+                }
+                return length;
+              });
+
+      // when
+      metaStore.write(buffer, channel, true);
+
+      // then
+      assertThat(written.toByteArray()).containsExactly(1, 2, 3, 4, 5);
+      verify(channel).force(true);
     }
   }
 }

@@ -14,8 +14,8 @@ on:
         default: false
         description: >-
           When true, skip uploading the distball/m2 tarball to the GitHub artifact API.
-          ci.yml's docker-checks consumes both artifacts, and the focused Gradle check consumes
-          m2-installed; standalone callers with no such consumers should set this to true.
+          ci.yml's docker-checks consumes both artifacts, and Gradle parity also consumes the
+          distball; standalone callers with no such consumers should set this to true.
 
 env:
   GCS_BUILD_CACHE_BUCKET: camunda-monorepo-ci-artifacts
@@ -79,7 +79,7 @@ jobs:
             --exclude='*.repositories' \
             -cf m2-installed.tar -C "${HOME}/.m2/repository/installed" .
           ls -lh m2-installed.tar
-      # docker-checks consumes the distball via the artifact API.
+      # GitHub-hosted docker-checks and fork Gradle parity runs consume this via the artifact API.
       - name: Upload distball (artifact)
         if: ${{ !inputs.skip-artifact-upload }}
         uses: ./.github/actions/upload-artifact-with-retry

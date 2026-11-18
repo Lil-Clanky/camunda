@@ -1,5 +1,7 @@
 import importlib.util
+import io
 import json
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,23 +16,33 @@ SPEC.loader.exec_module(MODULE)
 
 
 class DistributionComparisonTest(unittest.TestCase):
-    def create_archive(self, directory: Path, name: str, root: str, jars: list[str]) -> Path:
+    def create_archive(
+        self, directory: Path, name: str, root: str, jars: list[str]
+    ) -> Path:
         path = directory / name
         with ZipFile(path, "w") as archive:
             for jar in jars:
                 archive.writestr(f"{root}/lib/{jar}", b"payload")
         return path
 
-    def create_manifest(self, directory: Path, jars: list[str], direct: bool = False) -> Path:
+    def create_tar_archive(
+        self, directory: Path, name: str, root: str, jars: list[str]
+    ) -> Path:
+        path = directory / name
+        with tarfile.open(path, "w:gz") as archive:
+            for jar in jars:
+                payload = b"payload"
+                member = tarfile.TarInfo(f"{root}/lib/{jar}")
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+        return path
+
+    def create_manifest(
+        self, directory: Path, jars: list[str], direct: bool = False
+    ) -> Path:
         path = directory / "dist-dependencies.json"
         path.write_text(
-            json.dumps(
-                {
-                    "artifacts": [
-                        {"file": jar, "direct": direct} for jar in jars
-                    ]
-                }
-            )
+            json.dumps({"artifacts": [{"file": jar, "direct": direct} for jar in jars]})
         )
         return path
 
@@ -48,6 +60,20 @@ class DistributionComparisonTest(unittest.TestCase):
             self.assertEqual(root, "camunda-zeebe-1.0.0")
             self.assertEqual(files, ["lib/example-1.0.0.jar"])
 
+    def test_should_inventory_tar_archive_names_without_reading_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            archive = self.create_tar_archive(
+                Path(temporary_directory),
+                "distribution.tar.gz",
+                "camunda-zeebe-1.0.0",
+                ["example-1.0.0.jar"],
+            )
+
+            root, files = MODULE.tar_archive_inventory(str(archive))
+
+            self.assertEqual(root, "camunda-zeebe-1.0.0")
+            self.assertEqual(files, ["lib/example-1.0.0.jar"])
+
     def test_should_accept_equal_jar_inventories(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
@@ -59,6 +85,30 @@ class DistributionComparisonTest(unittest.TestCase):
             )
 
             self.assertEqual(MODULE.compare(str(gradle), str(maven)), 0)
+
+    def test_should_accept_equal_jar_inventories_from_tar_archives(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            gradle = self.create_tar_archive(
+                directory, "gradle.tar.gz", "camunda-zeebe-1.0.0", ["example-1.0.0.jar"]
+            )
+            maven = self.create_tar_archive(
+                directory, "maven.tar.gz", "camunda-zeebe-1.0.0", ["example-1.0.0.jar"]
+            )
+
+            self.assertEqual(MODULE.compare(str(gradle), str(maven)), 0)
+
+    def test_should_report_tar_distribution_root_mismatches(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            gradle = self.create_tar_archive(
+                directory, "gradle.tar.gz", "camunda-zeebe-1.0.0", ["example-1.0.0.jar"]
+            )
+            maven = self.create_tar_archive(
+                directory, "maven.tar.gz", "camunda-zeebe-2.0.0", ["example-1.0.0.jar"]
+            )
+
+            self.assertEqual(MODULE.compare(str(gradle), str(maven)), 2)
 
     def test_should_load_metadata_variant_exceptions_from_json(self):
         self.assertEqual(
@@ -121,7 +171,9 @@ class DistributionComparisonTest(unittest.TestCase):
             maven = self.create_archive(
                 directory, "maven.zip", "camunda-zeebe-1.0.0", ["example-1.0.0.jar"]
             )
-            manifest = self.create_manifest(directory, ["example-1.0.1.jar"], direct=True)
+            manifest = self.create_manifest(
+                directory, ["example-1.0.1.jar"], direct=True
+            )
 
             self.assertEqual(MODULE.compare(str(gradle), str(maven), str(manifest)), 2)
 

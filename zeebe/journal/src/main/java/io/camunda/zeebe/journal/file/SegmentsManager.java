@@ -50,7 +50,8 @@ final class SegmentsManager implements AutoCloseable {
 
   private final NavigableMap<Long, Segment> segments = new ConcurrentSkipListMap<>();
   private final ThrottledLogger throttledLog = new ThrottledLogger(LOG, Duration.ofSeconds(5));
-  private @Nullable CompletableFuture<UninitializedSegment> nextSegment = null;
+  // read when flushing, which may run on another thread
+  private volatile @Nullable CompletableFuture<UninitializedSegment> nextSegment = null;
   // the deletion stops at the first failed segment and retries it later, so that the log on disk
   // never has a gap
   private final Queue<Segment> segmentsToDelete = new ConcurrentLinkedQueue<>();
@@ -177,6 +178,32 @@ final class SegmentsManager implements AutoCloseable {
     segments.put(descriptor.index(), currentSegment);
     journalMetrics.incSegmentCount();
     return currentSegment;
+  }
+
+  /**
+   * Returns why a sync in the background failed, if one did: creating the next segment, which
+   * nothing requests until the current one is full, or deleting compacted segments, which only the
+   * next compaction would notice.
+   */
+  @Nullable SyncFailed getBackgroundSyncFailure() {
+    final var deletionFailure = deletionSyncFailure;
+    if (deletionFailure != null) {
+      return deletionFailure;
+    }
+
+    final var prepared = nextSegment;
+    if (prepared == null || !prepared.isCompletedExceptionally()) {
+      return null;
+    }
+
+    try {
+      prepared.join();
+    } catch (final CompletionException e) {
+      if (e.getCause() instanceof final SyncFailed syncFailed) {
+        return syncFailed;
+      }
+    }
+    return null;
   }
 
   @Nullable Segment getNextSegment(final long index) {

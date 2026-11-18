@@ -239,6 +239,15 @@ public final class SegmentedJournal implements Journal {
           previousFailure);
     }
 
+    // creating the next segment and deleting compacted ones happens in the background; fail now
+    // instead of publishing records while a failed sync there goes unnoticed
+    final var backgroundFailure = segments.getBackgroundSyncFailure();
+    if (backgroundFailure != null) {
+      recordSyncFailure(backgroundFailure);
+      throw new FlushException(
+          "Expected to flush the journal, but a sync in the background failed", backgroundFailure);
+    }
+
     if (!isOpen() || isEmpty()) {
       LOGGER.debug("Skipped journal flush as it is either closed or empty");
       return;

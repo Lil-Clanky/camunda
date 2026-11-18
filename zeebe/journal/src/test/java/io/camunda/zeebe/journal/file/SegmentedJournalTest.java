@@ -21,8 +21,10 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.assertj.core.api.AssertionsForClassTypes.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.spy;
 
 import com.google.common.util.concurrent.Uninterruptibles;
@@ -37,6 +39,7 @@ import io.camunda.zeebe.journal.record.RecordData;
 import io.camunda.zeebe.journal.util.MockJournalMetastore;
 import io.camunda.zeebe.journal.util.PosixPathAssert;
 import io.camunda.zeebe.util.CheckedRunnable;
+import io.camunda.zeebe.util.FileUtil;
 import io.camunda.zeebe.util.buffer.BufferUtil;
 import io.camunda.zeebe.util.buffer.DirectBufferWriter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -206,6 +209,41 @@ class SegmentedJournalTest {
     assertThat(truncation.join()).isSameAs(syncFailure);
     assertThat(flushFailure.get()).isInstanceOf(FlushException.class);
     assertThat(journalFactory.metaStore().loadLastFlushedIndex()).isOne();
+  }
+
+  @Test
+  void shouldFailFlushWhenNextSegmentFailsToSync() throws Exception {
+    // given - creating the next segment in the background fails to sync its directory
+    journalFactory = new TestJournalFactory(2);
+    final var loader = spy(journalFactory.segmentLoader());
+    doAnswer(
+            call -> {
+              final Path segmentFile = call.getArgument(0);
+              try (final var fileUtil = mockStatic(FileUtil.class, CALLS_REAL_METHODS)) {
+                fileUtil
+                    .when(() -> FileUtil.flushDirectory(segmentFile.getParent()))
+                    .thenThrow(new IOException("Input/output error"));
+                return call.callRealMethod();
+              }
+            })
+        .when(loader)
+        .createUninitializedSegment(any(), any(), any());
+    final var segments = journalFactory.segmentsManager(directory, loader);
+    journal = journalFactory.journal(segments);
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    journal.flush();
+    // the first record in the second segment starts preparing the third one
+    journal.append(journalFactory.entry());
+    Awaitility.await("next segment failed to sync")
+        .until(() -> segments.getBackgroundSyncFailure() != null);
+
+    // when - the second segment is far from full, so nothing requests the third one yet
+    final var flushFailure = catchThrowable(journal::flush);
+
+    // then
+    assertThat(flushFailure).isInstanceOf(FlushException.class);
+    assertThat(journalFactory.metaStore().loadLastFlushedIndex()).isEqualTo(2);
   }
 
   @Test

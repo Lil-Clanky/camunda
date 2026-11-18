@@ -1721,6 +1721,36 @@ class SegmentedJournalTest {
     assertThatThrownBy(journal::flush).isInstanceOf(FlushException.class).hasCause(error);
   }
 
+  @Test
+  void shouldRejectWritesAfterFailedSync() {
+    // given - preparing the second segment fails to sync
+    final var error = new SyncFailed("Failed to sync", new IOException("Input/output error"));
+    final var allocations = new AtomicInteger();
+    journalFactory =
+        new TestJournalFactory(
+            "test",
+            1,
+            (channel, fd, size) -> {
+              if (allocations.incrementAndGet() > 1) {
+                throw error;
+              }
+            });
+    journal = journalFactory.journal(journalFactory.segmentsManager(directory));
+    closeables.add(journal);
+    journal.append(journalFactory.entry());
+    assertThatThrownBy(() -> journal.append(journalFactory.entry())).isSameAs(error);
+
+    // when - nothing written now could be persisted
+    final var append = catchThrowable(() -> journal.append(journalFactory.entry()));
+    final var deleteAfter = catchThrowable(() -> journal.deleteAfter(0));
+    final var reset = catchThrowable(() -> journal.reset(10));
+
+    // then
+    assertThat(List.of(append, deleteAfter, reset))
+        .allSatisfy(thrown -> assertThat(thrown).isInstanceOf(SyncFailed.class).hasCause(error));
+    assertThat(journal.getLastIndex()).isOne();
+  }
+
   private SegmentedJournal openJournal(final int entriesPerSegment) {
     return openJournal("test", entriesPerSegment);
   }

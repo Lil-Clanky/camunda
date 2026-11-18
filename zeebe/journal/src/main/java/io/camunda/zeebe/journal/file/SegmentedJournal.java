@@ -85,6 +85,7 @@ public final class SegmentedJournal implements Journal {
   @Override
   public JournalRecord append(final long asqn, final BufferWriter recordDataWriter) {
     assertOpen();
+    assertNoSyncFailure();
     try (final var ignored = journalMetrics.observeAppendLatency()) {
       return writer.append(asqn, recordDataWriter);
     } catch (final SyncFailed e) {
@@ -96,6 +97,7 @@ public final class SegmentedJournal implements Journal {
   @Override
   public void append(final JournalRecord record) {
     assertOpen();
+    assertNoSyncFailure();
     try (final var ignored = journalMetrics.observeAppendLatency()) {
       writer.append(record);
     } catch (final SyncFailed e) {
@@ -107,6 +109,7 @@ public final class SegmentedJournal implements Journal {
   @Override
   public JournalRecord append(final long checksum, final byte[] serializedRecord) {
     assertOpen();
+    assertNoSyncFailure();
     try (final var ignored = journalMetrics.observeAppendLatency()) {
       return writer.append(checksum, serializedRecord);
     } catch (final SyncFailed e) {
@@ -117,6 +120,7 @@ public final class SegmentedJournal implements Journal {
 
   @Override
   public void deleteAfter(final long indexExclusive) {
+    assertNoSyncFailure();
     journalMetrics.observeSegmentTruncation(
         () -> {
           final var stamp = rwlock.writeLock();
@@ -147,6 +151,7 @@ public final class SegmentedJournal implements Journal {
 
   @Override
   public void reset(final long nextIndex) {
+    assertNoSyncFailure();
     final var stamp = rwlock.writeLock();
     try {
       journalIndex.clear();
@@ -186,8 +191,9 @@ public final class SegmentedJournal implements Journal {
    * segment), may leave records only in the page cache: the kernel marks their pages clean and
    * reports the error only once, so a later flush has nothing left to write and succeeds. To never
    * treat these records as durable, every flush after a failed one fails too, and the last flushed
-   * index stays at the last flush that succeeded. Recovering requires restarting from the data that
-   * is actually on disk.
+   * index stays at the last flush that succeeded. Appending, truncating and resetting fail too, as
+   * nothing written can be persisted anymore. Recovering requires restarting from the data that is
+   * actually on disk.
    */
   @Override
   public void flush() throws FlushException {
@@ -240,6 +246,15 @@ public final class SegmentedJournal implements Journal {
     if (failure != null) {
       recordSyncFailure(failure);
       throw failure;
+    }
+  }
+
+  private void assertNoSyncFailure() {
+    final var previousFailure = syncFailure;
+    if (previousFailure != null) {
+      throw new SyncFailed(
+          "Expected to write to the journal, but a previous sync failed; nothing written can be persisted anymore",
+          previousFailure);
     }
   }
 

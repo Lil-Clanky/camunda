@@ -129,7 +129,9 @@ public final class SegmentedJournal implements Journal {
           try {
             writer.deleteAfter(indexExclusive, hasConcurrentReaderPast(indexExclusive));
             readers.forEach(reader -> reader.onTruncatedAfter(indexExclusive));
-          } catch (final SyncFailed e) {
+          } catch (final RuntimeException e) {
+            // deleting segments may have failed half-way, e.g. failing to rename one, leaving the
+            // log in a state that a flush must not publish
             recordSyncFailure(e);
             throw e;
           } finally {
@@ -162,7 +164,9 @@ public final class SegmentedJournal implements Journal {
       // with a greater index than what we previously had. it's fine if the stored last flushed
       // index is lower than the real flushed index. every thing will be treated as a partial write
       // until the next flush, which is fine
-    } catch (final SyncFailed e) {
+    } catch (final RuntimeException e) {
+      // deleting segments may have failed half-way, e.g. failing to rename one, after the ones
+      // behind it were deleted already; flushing would then publish an index the log lost
       recordSyncFailure(e);
       throw e;
     } finally {
@@ -231,7 +235,7 @@ public final class SegmentedJournal implements Journal {
     final var previousFailure = syncFailure;
     if (previousFailure != null) {
       throw new FlushException(
-          "Expected to flush the journal, but a previous sync failed; records written since the last successful flush may not be on disk",
+          "Expected to flush the journal, but a previous sync or deletion failed; records written since the last successful flush may not be on disk",
           previousFailure);
     }
 
@@ -273,7 +277,7 @@ public final class SegmentedJournal implements Journal {
     final var previousFailure = syncFailure;
     if (previousFailure != null) {
       throw new SyncFailed(
-          "Expected to write to the journal, but a previous sync failed; nothing written can be persisted anymore",
+          "Expected to write to the journal, but a previous sync or deletion failed; nothing written can be persisted anymore",
           previousFailure);
     }
   }

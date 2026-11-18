@@ -26,6 +26,7 @@ import io.atomix.raft.storage.serializer.RaftEntrySBESerializer;
 import io.atomix.raft.storage.serializer.RaftEntrySerializer;
 import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.Journal;
+import io.camunda.zeebe.journal.JournalException;
 import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.journal.JournalRecord;
 import io.camunda.zeebe.journal.SegmentInfo;
@@ -208,7 +209,7 @@ public final class RaftLog implements Closeable {
     }
     try {
       journal.reset(index);
-    } catch (final SyncFailed e) {
+    } catch (final JournalException e) {
       reportStorageFailure(e);
       throw e;
     }
@@ -228,7 +229,7 @@ public final class RaftLog implements Closeable {
     }
     try {
       journal.deleteAfter(index);
-    } catch (final SyncFailed e) {
+    } catch (final JournalException e) {
       reportStorageFailure(e);
       throw e;
     }

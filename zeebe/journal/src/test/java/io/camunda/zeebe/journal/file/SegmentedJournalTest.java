@@ -137,6 +137,34 @@ class SegmentedJournalTest {
   }
 
   @Test
+  void shouldNotPublishDeletedRecordsWhenResetFailsHalfWay() throws Exception {
+    // given - three flushed records in three segments, and a second one that cannot be renamed
+    journalFactory = new TestJournalFactory(1);
+    final var segments = journalFactory.segmentsManager(directory);
+    journal = journalFactory.journal(segments);
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    journal.flush();
+    final var lastSegmentFile = segments.getLastSegment().file().file();
+    final var renameTarget = segments.getNextSegment(1).file().getFileMarkedForDeletion();
+    Files.createFile(renameTarget);
+
+    // when - reset deletes the last segment, then fails to rename the second one
+    assertThatThrownBy(() -> journal.reset(101))
+        .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+    assertThat(lastSegmentFile).doesNotExist();
+    Files.delete(renameTarget);
+    journal.close();
+
+    // then - closing did not claim the deleted record as flushed
+    assertThat(journalFactory.metaStore().loadLastFlushedIndex()).isLessThanOrEqualTo(2);
+    try (final var reopened = journalFactory.journal(journalFactory.segmentsManager(directory))) {
+      assertThat(reopened.getLastIndex()).isEqualTo(2);
+    }
+  }
+
+  @Test
   void shouldNotFlushAfterConcurrentTruncationFailsToSync() throws Exception {
     // given - a truncation held in syncing the segment descriptor, which then fails
     journalFactory = new TestJournalFactory(5);

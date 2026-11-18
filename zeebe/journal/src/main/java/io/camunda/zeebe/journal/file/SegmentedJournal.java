@@ -34,6 +34,7 @@ import java.util.Collection;
 import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.SortedMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.StampedLock;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
@@ -54,6 +55,7 @@ public final class SegmentedJournal implements Journal {
   private final JournalMetaStore metaStore;
   // the first failed sync, after which no flush may succeed anymore; see flush()
   private volatile @Nullable Throwable syncFailure;
+  private final ReentrantLock flushLock = new ReentrantLock();
 
   SegmentedJournal(
       final JournalIndex journalIndex,
@@ -197,6 +199,18 @@ public final class SegmentedJournal implements Journal {
    */
   @Override
   public void flush() throws FlushException {
+    // Flushes may run concurrently, e.g. a delayed flush and the one when closing. Two flushes
+    // could both pass the check for a previous failure; the second would then sync the pages the
+    // first failed to sync again, succeed, and store a last flushed index past what is on disk.
+    flushLock.lock();
+    try {
+      flushExclusively();
+    } finally {
+      flushLock.unlock();
+    }
+  }
+
+  private void flushExclusively() throws FlushException {
     final var previousFailure = syncFailure;
     if (previousFailure != null) {
       throw new FlushException(

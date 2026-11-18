@@ -177,7 +177,6 @@ zeebe:
   image:
     registry: docker.io
     repository: camunda/zeebe
-    tag: 8.7.45
   # ClusterSize defines the amount of brokers (=replicas), which are deployed via helm
   clusterSize: "3"
   # CUSTOMIZATION: 3 partitions instead of the Camunda default of 1, on purpose, to test with more partitions.
@@ -302,8 +301,6 @@ zeebeGateway:
     repository: camunda/zeebe
     # Image.registry defines which image registry to use
     registry: docker.io
-    # Image.tag defines the tag / version which should be used in the chart
-    tag: 8.7.45
   # LogLevel defines the log level which is used by the gateway
   logLevel: debug
 

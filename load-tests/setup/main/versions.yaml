@@ -1,0 +1,16 @@
+orchestration:
+  image:
+    # renovate: datasource=docker depName=docker.io/camunda/camunda depType=main
+    tag: "8.11.0-alpha1-rc2"
+optimize:
+  image:
+    # renovate: datasource=docker depName=docker.io/camunda/optimize
+    tag: "8.10.9"
+identity:
+  image:
+    # renovate: datasource=docker depName=docker.io/camunda/identity
+    tag: "8.10.4"
+connectors:
+  image:
+    # renovate: datasource=docker depName=docker.io/camunda/connectors-bundle
+    tag: "8.10.4"

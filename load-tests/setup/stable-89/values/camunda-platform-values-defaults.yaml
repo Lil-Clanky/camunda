@@ -149,7 +149,6 @@ orchestration:
   image:
     registry: docker.io
     repository: camunda/camunda
-    tag: 8.9.28
   ## @param core.clusterSize defines the amount of brokers (=replicas), which are deployed via helm
   clusterSize: "3"
   # CUSTOMIZATION: 3 partitions instead of the Camunda default of 1, on purpose, to test with more partitions.

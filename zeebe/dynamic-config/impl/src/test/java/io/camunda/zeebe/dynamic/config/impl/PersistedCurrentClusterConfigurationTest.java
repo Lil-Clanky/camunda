@@ -77,19 +77,24 @@ final class PersistedCurrentClusterConfigurationTest {
   }
 
   @Test
-  void shouldNotUseConfigurationWhichFailedToBeWritten() throws IOException {
-    // given - a write that fails, standing in for a failed sync of the DSYNC write
+  void shouldKeepPreviousConfigurationOnDiskWhenWriteFails() throws IOException {
+    // given - a persisted configuration, and a write of the next one that fails
     final var file = tmp.resolve("config.meta");
+    final var previous = sampleConfiguration();
     final var persisted = PersistedCurrentClusterConfiguration.ofFile(file, serializer);
-    Files.createDirectory(file);
+    persisted.update(previous);
+    // the new file cannot be created if a directory is in its place
+    Files.createDirectory(tmp.resolve("config.meta.tmp"));
 
     // when
-    final var thrown = catchThrowable(() -> persisted.update(sampleConfiguration()));
+    final var thrown =
+        catchThrowable(() -> persisted.update(CurrentClusterConfiguration.uninitialized()));
 
-    // then - the configuration is not used, so it is not gossiped or applied; the next update
-    // rewrites the whole file instead of syncing it again
+    // then - neither used nor gossiped, and still on disk after a restart
     assertThat(thrown).isInstanceOf(IOException.class);
-    assertThat(persisted.isUninitialized()).isTrue();
+    assertThat(persisted.getConfiguration()).isEqualTo(previous);
+    assertThat(PersistedCurrentClusterConfiguration.ofFile(file, serializer).getConfiguration())
+        .isEqualTo(previous);
   }
 
   @Test

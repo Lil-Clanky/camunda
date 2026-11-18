@@ -11,7 +11,6 @@
 # owner: @camunda/reliability-testing
 #
 # Infos from Infra:
-# - Using the infra benchmark prod cluster requires to use Teleport to authenticate.
 # - Camunda images are pushed to registry.camunda.cloud/team-zeebe and pulled from there.
 #   To use them in a namespace, the namespace must be labeled with "registry=harbor"
 #   You must also set the image pull secret to "harbor-registry" in the helm values.
@@ -254,9 +253,6 @@ env:
 
   # Namespaces MUST start with c8 due to access policy
   NAMESPACE: ${{ startsWith(inputs.name, 'c8-') && inputs.name || format('c8-{0}', inputs.name) }}
-
-  CLUSTER: camunda-benchmark-prod  # change this to "camunda-benchmark-dev" when experimenting
-  TELEPORT_JOIN_TOKEN: infra-benchmark-prod-github-action-zeebe  # change this to "infra-benchmark-dev-github-action-zeebe" when experimenting
 
   BUILD_FRONTEND: ${{ inputs.build-frontend }}
   CONNECTORS_TAG: ${{ inputs.connectors-tag }}

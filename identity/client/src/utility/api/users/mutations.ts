@@ -15,7 +15,18 @@ import type {
 import { getApiBaseUrl } from "src/configuration/urlConfig";
 import { unwrap } from "../request";
 import { queryKeys } from "../queryKeys";
-import { createUser, deleteUser, updateUser } from ".";
+import {
+  confirmThenInvalidate,
+  insertIntoListCaches,
+  removeFromListCaches,
+  updateInListCaches,
+} from "../optimisticListUpdates";
+import { createUser, deleteUser, searchUser, updateUser } from ".";
+
+const searchUserByUsername = (username: string) =>
+  unwrap(
+    searchUser({ usernames: [username], page: { limit: 1 } })(getApiBaseUrl()),
+  );
 
 export const userMutations = {
   create: (qc: QueryClient) =>
@@ -23,19 +34,65 @@ export const userMutations = {
       mutationFn: (body: CreateUserRequestBody) =>
         unwrap(createUser(body)(getApiBaseUrl())),
       meta: { skipErrorNotification: true },
-      onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.users.all }),
+      onSuccess: (_data, { username, name, email }) => {
+        insertIntoListCaches<User>(qc, queryKeys.users.search(), {
+          username,
+          name,
+          email,
+        });
+        void confirmThenInvalidate(
+          qc,
+          queryKeys.users.all,
+          () => searchUserByUsername(username),
+          (items) => items.some((item) => item.username === username),
+        );
+      },
     }),
   update: (qc: QueryClient) =>
     mutationOptions({
       mutationFn: (body: UpdateUserRequestBody & Pick<User, "username">) =>
         unwrap(updateUser(body)(getApiBaseUrl())),
       meta: { skipErrorNotification: true },
-      onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.users.all }),
+      onSuccess: (_data, { username, name, email }) => {
+        updateInListCaches<User>(
+          qc,
+          queryKeys.users.search(),
+          (item) => item.username === username,
+          { name, email },
+        );
+        void qc.invalidateQueries({
+          queryKey: queryKeys.users.detail(username),
+        });
+        void confirmThenInvalidate(
+          qc,
+          queryKeys.users.all,
+          () => searchUserByUsername(username),
+          (items) =>
+            items.some(
+              (item) =>
+                item.username === username &&
+                item.name === name &&
+                item.email === email,
+            ),
+        );
+      },
     }),
   delete: (qc: QueryClient) =>
     mutationOptions({
       mutationFn: (body: Pick<User, "username">) =>
         unwrap(deleteUser(body)(getApiBaseUrl())),
-      onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.users.all }),
+      onSuccess: (_data, { username }) => {
+        removeFromListCaches<User>(
+          qc,
+          queryKeys.users.search(),
+          (item) => item.username === username,
+        );
+        void confirmThenInvalidate(
+          qc,
+          queryKeys.users.all,
+          () => searchUserByUsername(username),
+          (items) => items.every((item) => item.username !== username),
+        );
+      },
     }),
 };

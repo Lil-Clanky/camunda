@@ -19,6 +19,7 @@ import static io.camunda.zeebe.journal.file.SegmentedJournal.ASQN_IGNORE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.assertj.core.api.AssertionsForClassTypes.catchThrowable;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -63,6 +64,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.assertj.core.api.Assertions;
@@ -132,6 +134,50 @@ class SegmentedJournalTest {
     try (final var reopened = journalFactory.journal(journalFactory.segmentsManager(directory))) {
       assertThat(reopened.getLastIndex()).isOne();
     }
+  }
+
+  @Test
+  void shouldNotFlushAfterConcurrentTruncationFailsToSync() throws Exception {
+    // given - a truncation held in syncing the segment descriptor, which then fails
+    journalFactory = new TestJournalFactory(5);
+    final var loader = spy(journalFactory.segmentLoader());
+    doAnswer(call -> spy((Segment) call.callRealMethod()))
+        .when(loader)
+        .createSegment(any(), any(), anyLong(), any());
+    final var segments = journalFactory.segmentsManager(directory, loader);
+    journal = journalFactory.journal(segments);
+    journal.append(journalFactory.entry());
+    journal.flush();
+    journal.append(journalFactory.entry());
+    journal.append(journalFactory.entry());
+    final var syncing = new CountDownLatch(1);
+    final var failSync = new CountDownLatch(1);
+    final var syncFailure = new SyncFailed("Failed to sync", new IOException("Input/output error"));
+    doAnswer(
+            call -> {
+              syncing.countDown();
+              Uninterruptibles.awaitUninterruptibly(failSync);
+              throw syncFailure;
+            })
+        .when(segments.getLastSegment())
+        .resetLastEntryInDescriptor();
+    final var truncation =
+        CompletableFuture.supplyAsync(() -> catchThrowable(() -> journal.deleteAfter(2)));
+    syncing.await();
+
+    // when - a flush, e.g. a delayed one, waits for the truncation
+    final var flushFailure = new AtomicReference<Throwable>();
+    final var flushing = new Thread(() -> flushFailure.set(catchThrowable(journal::flush)));
+    flushing.start();
+    Awaitility.await("flush waits for the truncation")
+        .until(() -> flushing.getState() == Thread.State.WAITING || !flushing.isAlive());
+    failSync.countDown();
+    flushing.join();
+
+    // then
+    assertThat(truncation.join()).isSameAs(syncFailure);
+    assertThat(flushFailure.get()).isInstanceOf(FlushException.class);
+    assertThat(journalFactory.metaStore().loadLastFlushedIndex()).isOne();
   }
 
   @Test

@@ -211,6 +211,23 @@ public final class SegmentedJournal implements Journal {
   }
 
   private void flushExclusively() throws FlushException {
+    // grabbing the read lock here will prevent write-exclusive operations such as deleteAfter and
+    // reset from modifying the segments, allowing us to properly determine which segments must be
+    // flushed. contention is quite low as it only contends with deleteAfter, deleteUntil, and
+    // reset, all operations which do not run often, and not on the hot path. in the case where
+    // flushing is synchronous on the raft thread (the default), then all these operations run
+    // sequentially anyway, meaning there is virtually no contention. The checks for a previous
+    // failure and storing the last flushed index happen under the same lock: a truncation that
+    // fails, or lowers the last flushed index, in between would otherwise be missed or undone.
+    final var stamp = rwlock.readLock();
+    try {
+      flushUnderReadLock();
+    } finally {
+      rwlock.unlockRead(stamp);
+    }
+  }
+
+  private void flushUnderReadLock() throws FlushException {
     final var previousFailure = syncFailure;
     if (previousFailure != null) {
       throw new FlushException(
@@ -224,38 +241,26 @@ public final class SegmentedJournal implements Journal {
     }
 
     FlushException failure = null;
-    // grabbing the read lock here will prevent write-exclusive operations such as deleteAfter and
-    // reset from modifying the segments, allowing us to properly determine which segments must be
-    // flushed. contention is quite low as it only contends with deleteAfter, deleteUntil, and
-    // reset, all operations which do not run often, and not on the hot path. in the case where
-    // flushing is synchronous on the raft thread (the default), then all these operations run
-    // sequentially anyway, meaning there is virtually no contention. The last flushed index is
-    // stored under the same lock: a truncation that lowers it in between would otherwise be undone.
-    final var stamp = rwlock.readLock();
-    try {
-      try (final var ignored = journalMetrics.observeJournalFlush()) {
-        writer.flush();
-      } catch (final FlushException e) {
-        failure = e;
-      }
+    try (final var ignored = journalMetrics.observeJournalFlush()) {
+      writer.flush();
+    } catch (final FlushException e) {
+      failure = e;
+    }
 
-      // store whatever was flushed, even if a later segment failed to flush
-      final var lastFlushedIndex = writer.getLastFlushedIndex();
-      if (lastFlushedIndex > 0) {
-        try {
-          metaStore.storeLastFlushedIndex(lastFlushedIndex);
-        } catch (final RuntimeException e) {
-          if (failure == null) {
-            failure =
-                new FlushException(
-                    "Failed to store the last flushed index %d".formatted(lastFlushedIndex), e);
-          } else {
-            failure.addSuppressed(e);
-          }
+    // store whatever was flushed, even if a later segment failed to flush
+    final var lastFlushedIndex = writer.getLastFlushedIndex();
+    if (lastFlushedIndex > 0) {
+      try {
+        metaStore.storeLastFlushedIndex(lastFlushedIndex);
+      } catch (final RuntimeException e) {
+        if (failure == null) {
+          failure =
+              new FlushException(
+                  "Failed to store the last flushed index %d".formatted(lastFlushedIndex), e);
+        } else {
+          failure.addSuppressed(e);
         }
       }
-    } finally {
-      rwlock.unlockRead(stamp);
     }
 
     if (failure != null) {

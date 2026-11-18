@@ -10,8 +10,10 @@ package io.atomix.raft.impl;
 import io.atomix.raft.metrics.RaftServiceMetrics;
 import io.atomix.raft.storage.log.RaftLog;
 import io.atomix.utils.concurrent.ThreadContext;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.snapshots.PersistedSnapshotStore;
 import io.camunda.zeebe.util.VisibleForTesting;
+import java.util.function.BiFunction;
 import org.agrona.LangUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,15 +34,20 @@ public final class LogCompactor {
   // used when performing compaction; may be updated from a different thread
   private volatile long compactableIndex;
 
+  // fails the server when deleting segments failed to sync, see RaftContext#failOnStorageError
+  private final BiFunction<String, Throwable, ? extends RuntimeException> failOnStorageError;
+
   public LogCompactor(
       final ThreadContext threadContext,
       final RaftLog log,
       final int replicationThreshold,
-      final RaftServiceMetrics metrics) {
+      final RaftServiceMetrics metrics,
+      final BiFunction<String, Throwable, ? extends RuntimeException> failOnStorageError) {
     this.threadContext = threadContext;
     this.log = log;
     this.replicationThreshold = replicationThreshold;
     this.metrics = metrics;
+    this.failOnStorageError = failOnStorageError;
   }
 
   @VisibleForTesting
@@ -100,6 +107,9 @@ public final class LogCompactor {
       final var compacted = log.deleteUntil(index);
       LOGGER.debug("Compacted log up to index {}", index);
       return compacted;
+    } catch (final SyncFailed e) {
+      throw failOnStorageError.apply(
+          "Failed to compact the log up to index %d".formatted(index), e);
     } catch (final Exception e) {
       LOGGER.error("Failed to compact up to index {}", index, e);
       LangUtil.rethrowUnchecked(e);

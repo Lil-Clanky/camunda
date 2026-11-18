@@ -7,15 +7,22 @@
  */
 package io.atomix.raft.impl;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatCode;
+import static org.assertj.core.api.AssertionsForClassTypes.catchThrowable;
 
 import io.atomix.raft.metrics.RaftServiceMetrics;
 import io.atomix.raft.snapshot.InMemorySnapshot;
 import io.atomix.raft.snapshot.TestSnapshotStore;
 import io.atomix.raft.storage.log.RaftLog;
 import io.atomix.utils.concurrent.ThreadContext;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
+import io.camunda.zeebe.util.exception.UnrecoverableException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -30,6 +37,7 @@ import org.mockito.Mockito;
 final class LogCompactorTest {
   private ThreadContext threadContext;
   private RaftLog raftLog;
+  private final List<Throwable> storageFailures = new ArrayList<>();
   private LogCompactor compactor;
   @AutoClose private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
@@ -47,7 +55,15 @@ final class LogCompactorTest {
         .execute(Mockito.any());
 
     compactor =
-        new LogCompactor(threadContext, raftLog, 5, new RaftServiceMetrics("1", meterRegistry));
+        new LogCompactor(
+            threadContext,
+            raftLog,
+            5,
+            new RaftServiceMetrics("1", meterRegistry),
+            (message, cause) -> {
+              storageFailures.add(cause);
+              return new UnrecoverableException(message, cause);
+            });
   }
 
   @Test
@@ -64,6 +80,21 @@ final class LogCompactorTest {
             Mockito.times(1)
                 .description("should compact up to index minus the replication threshold"))
         .deleteUntil(7);
+  }
+
+  @Test
+  void shouldFailServerWhenCompactionFailsToSync() {
+    // given - e.g. syncing the directory after marking a segment for deletion failed
+    final var syncError = new SyncFailed("Failed to sync", new IOException("Input/output error"));
+    Mockito.when(raftLog.deleteUntil(Mockito.anyLong())).thenThrow(syncError);
+    compactor.setCompactableIndex(12);
+
+    // when
+    final var thrown = catchThrowable(compactor::compact);
+
+    // then
+    assertThat(thrown).isInstanceOf(UnrecoverableException.class).hasCause(syncError);
+    assertThat(storageFailures).containsExactly(syncError);
   }
 
   @Test

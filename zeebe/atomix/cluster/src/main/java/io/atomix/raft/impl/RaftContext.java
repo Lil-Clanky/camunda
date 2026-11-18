@@ -265,7 +265,8 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
             threadContext,
             raftLog,
             partitionConfig.getPreferSnapshotReplicationThreshold(),
-            new RaftServiceMetrics(name, meterRegistry));
+            new RaftServiceMetrics(name, meterRegistry),
+            this::failOnStorageError);
 
     snapshotChunkSize = partitionConfig.getSnapshotChunkSize();
 

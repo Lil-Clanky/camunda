@@ -55,6 +55,8 @@ final class SegmentsManager implements AutoCloseable {
   // never has a gap
   private final Queue<Segment> segmentsToDelete = new ConcurrentLinkedQueue<>();
   private CompletableFuture<Void> pendingDeletion = CompletableFuture.completedFuture(null);
+  // set by the background deletion, see onDeletionFailed
+  private volatile @Nullable SyncFailed deletionSyncFailure;
 
   private final JournalMetrics journalMetrics;
   private final JournalIndex journalIndex;
@@ -203,6 +205,13 @@ final class SegmentsManager implements AutoCloseable {
   }
 
   boolean deleteUntil(final long index) {
+    final var previousFailure = deletionSyncFailure;
+    if (previousFailure != null) {
+      throw new SyncFailed(
+          "Expected to delete segments, but deleting compacted segments failed to sync",
+          previousFailure);
+    }
+
     final Map.Entry<Long, Segment> segmentEntry = segments.floorEntry(index);
     if (segmentEntry == null) {
       scheduleQueuedDeletion();
@@ -256,6 +265,12 @@ final class SegmentsManager implements AutoCloseable {
   }
 
   private @Nullable Void onDeletionFailed(final Throwable error) {
+    final var cause = error instanceof CompletionException ? error.getCause() : error;
+    if (cause instanceof final SyncFailed syncFailed) {
+      // deleting the segment again would sync the same directory again, which may succeed without
+      // persisting the rename that failed to sync
+      deletionSyncFailure = syncFailed;
+    }
     LOG.error(
         "{} - Failed to delete segment {}. The next compaction tries again.",
         name,
@@ -305,9 +320,10 @@ final class SegmentsManager implements AutoCloseable {
       // underlying buffer
       //noinspection resource
       final var segment = it.next();
-      segment.delete();
+      // remove it first, as it is closed even if deleting it fails
       it.remove();
       journalMetrics.decSegmentCount();
+      segment.delete();
     }
 
     final SegmentDescriptor descriptor =

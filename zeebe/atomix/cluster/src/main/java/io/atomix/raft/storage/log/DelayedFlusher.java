@@ -13,6 +13,7 @@ import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.Journal;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,6 +44,8 @@ public final class DelayedFlusher implements RaftLogFlusher {
   private Scheduled scheduledFlush;
 
   private boolean closed;
+  // held while flushing, so that closing can wait for a running flush instead of interrupting it
+  private final ReentrantLock flushLock = new ReentrantLock();
   private volatile Throwable failure;
   private volatile Consumer<Throwable> failureListener = error -> {};
 
@@ -78,6 +81,15 @@ public final class DelayedFlusher implements RaftLogFlusher {
       }
     }
 
+    // Closing the scheduler interrupts a running flush, which closes the files it writes to
+    // (ClosedByInterruptException): a healthy flush would fail, and the journal with it. Wait for
+    // it first; a flush that starts afterwards sees that the flusher is closed and does nothing.
+    flushLock.lock();
+    try {
+      LOGGER.trace("No delayed flush is running anymore, closing the scheduler");
+    } finally {
+      flushLock.unlock();
+    }
     scheduler.close();
   }
 
@@ -99,18 +111,26 @@ public final class DelayedFlusher implements RaftLogFlusher {
   }
 
   private void asyncFlush(final Journal journal) {
-    synchronized (scheduledMonitor) {
-      scheduledFlush = null;
-    }
-
-    LOGGER.trace("Flushing journal after {}", delayTime);
-
+    flushLock.lock();
     try {
-      journal.flush();
-    } catch (final FlushException | RuntimeException e) {
-      LOGGER.error("Failed to flush journal, will not flush it again", e);
-      failure = e;
-      failureListener.accept(e);
+      synchronized (scheduledMonitor) {
+        scheduledFlush = null;
+        if (closed) {
+          return;
+        }
+      }
+
+      LOGGER.trace("Flushing journal after {}", delayTime);
+
+      try {
+        journal.flush();
+      } catch (final FlushException | RuntimeException e) {
+        LOGGER.error("Failed to flush journal, will not flush it again", e);
+        failure = e;
+        failureListener.accept(e);
+      }
+    } finally {
+      flushLock.unlock();
     }
   }
 

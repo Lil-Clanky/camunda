@@ -1,8 +1,10 @@
 # description: Central reusable workflow for deploying load tests. All load test creation
 #              routes through this workflow. Builds Docker images (or reuses existing ones),
-#              then deploys via newLoadTest.sh + `make install` to a GKE cluster.
+#              then deploys via camunda-load-test-deploy.yml (newLoadTest.sh + `make install`)
+#              to a GKE cluster.
 # called-by: camunda-daily-load-tests.yml, camunda-weekly-load-tests.yml,
 #            camunda-pr-load-test.yaml, camunda-release-load-test.yaml
+# calls: camunda-load-test-deploy.yml
 # also: triggerable manually via workflow_dispatch for ad-hoc load tests
 # monitoring: https://dashboard.benchmark.camunda.cloud/
 # type: CI
@@ -554,100 +556,34 @@ jobs:
       (needs.build-camunda-image.result == 'success' || needs.build-camunda-image.result == 'skipped') &&
       (needs.build-load-test-images.result == 'success' || needs.build-load-test-images.result == 'skipped') &&
       (needs.build-metrics-exporter-image.result == 'success' || needs.build-metrics-exporter-image.result == 'skipped')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     permissions:
-      id-token: write # Teleport cluster auth
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref }}
-          persist-credentials: false
-
-      - name: Set up Helm
-        uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
-        with:
-          minimum_release_age: 15d
-          install_args: helm
-          cache_save: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/stable/') }}
-
-      # Authenticate with Teleport
-      - name: Set up Teleport
-        uses: teleport-actions/setup@10b5e9f760190f027a1e04e342178d8d6e7eae30 # v2.0.0
-        with:
-            proxy: camunda.teleport.sh:443
-            version: auto
-
-      - name: Authenticate to Cluster using Teleport
-        uses: teleport-actions/auth-k8s@0f46164469ae4fcd4d359d40e06bab17d4be17c9 # v2.0.6
-        with:
-            proxy: camunda.teleport.sh:443
-            token: ${{ env.TELEPORT_JOIN_TOKEN }}
-            kubernetes-cluster: ${{ env.CLUSTER }}
-
-      - name: Print tool versions
-        run: .github/scripts/load-test-print-tool-versions.sh
-
-      - name: Scaffold load-test folder
-        run: |
-          cd load-tests/setup
-          # The namespace label created-by will not be able resolve the actual user which triggered
-          # the GitHub action by default. We need to correctly configure the git user here to make it work
-          git config user.name "${GITHUB_ACTOR}"
-          # Render the load-test folder. newLoadTest.sh no longer creates the namespace — that
-          # happens on `make install` via `kubectl apply -f resources/namespace.yaml`.
-          ./newLoadTest.sh --target-version "${TARGET_VERSION}" "${NAMESPACE}" "${SECONDARY_STORAGE_TYPE}" "${TTL}" "${ENABLE_OPTIMIZE}"
-
-      - name: Install latest Camunda Platform
-        shell: bash --noprofile --norc -exo pipefail {0}
-        env:
-          INSTALL_TARGET: ${{ inputs.stable-vms && 'install-stable' || 'install' }}
-          CALCULATED_IMAGE_TAG: ${{ needs.calculate-image-tag.outputs.image-tag }}
-          RESOLVED_IMAGE_REGISTRY: ${{ inputs.orchestration-tag != '' && 'docker.io' || 'registry.camunda.cloud' }}
-          CAMUNDA_REPO: ${{ inputs.orchestration-tag != '' && 'camunda/camunda' || 'team-zeebe/camunda' }}
-          OPTIMIZE_REPO: ${{ inputs.orchestration-tag != '' && 'camunda/optimize' || 'team-zeebe/optimize' }}
-          METRICS_EXPORTER_BUILT: ${{ needs.build-metrics-exporter-image.result == 'success' }}
-        run: |-
-          .github/scripts/load-test-install-camunda-platform.sh \
-            "${NAMESPACE}" \
-            "${INSTALL_TARGET}" \
-            "${CALCULATED_IMAGE_TAG}" \
-            "${IMAGE_REPOSITORY}" \
-            "${RESOLVED_IMAGE_REGISTRY}" \
-            "${CAMUNDA_REPO}" \
-            "${OPTIMIZE_REPO}" \
-            "${PERFORM_READ_BENCHMARKS}" \
-            "${ENABLE_OPTIMIZE}" \
-            "${ENABLE_OPTIMIZE_METRICS}" \
-            "${METRICS_EXPORTER_BUILT}" \
-            "${ENABLE_CHAOS}" \
-            "${PHYSICAL_TENANT_COUNT}" \
-            --optimize-tag "${OPTIMIZE_TAG}" \
-            --orchestration-tag "${ORCHESTRATION_TAG}" \
-            --identity-tag "${IDENTITY_TAG}" \
-            --connectors-tag "${CONNECTORS_TAG}" \
-            --load-test-load "${LOAD_TEST_LOAD}" \
-            --platform-helm-values "${PLATFORM_HELM_VALUES}" \
-            --load-test-setup-helm-values "${LOAD_TEST_SETUP_HELM_VALUES}" \
-            --scenario "${SCENARIO}"
-
-      - name: Annotate namespace with workflow run URL
-        run: |
-          # Traceability annotation, applied after `make install` has created the namespace.
-          kubectl annotate namespace "${NAMESPACE}" \
-            "github.com/workflow-run-url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --overwrite
-
-      - name: Summarize load test deployment
-        if: success()
-        run: .github/scripts/load-test-summary.sh "${NAMESPACE}" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Observe build status
-        if: always()
-        continue-on-error: true
-        uses: ./.github/actions/observe-build-status
-        with:
-          build_status: ${{ job.status }}
-          secret_vault_address: ${{ secrets.VAULT_ADDR }}
-          secret_vault_roleId: ${{ secrets.VAULT_ROLE_ID }}
-          secret_vault_secretId: ${{ secrets.VAULT_SECRET_ID }}
+      id-token: write # Teleport cluster auth in called workflow
+    uses: ./.github/workflows/camunda-load-test-deploy.yml
+    secrets: inherit
+    with:
+      name: ${{ inputs.name }}
+      ref: ${{ inputs.ref }}
+      ttl: ${{ inputs.ttl }}
+      scenario: ${{ inputs.scenario }}
+      load-test-load: ${{ inputs.load-test-load }}
+      platform-helm-values: ${{ inputs.platform-helm-values }}
+      load-test-setup-helm-values: ${{ inputs.load-test-setup-helm-values }}
+      perform-read-benchmarks: ${{ inputs.perform-read-benchmarks }}
+      stable-vms: ${{ inputs.stable-vms }}
+      enable-optimize: ${{ inputs.enable-optimize }}
+      enable-chaos: ${{ inputs.enable-chaos }}
+      physical-tenant-count: ${{ inputs.physical-tenant-count }}
+      enable-optimize-report-metrics: ${{ inputs.enable-optimize-report-metrics }}
+      secondary-storage-type: ${{ inputs.secondary-storage-type }}
+      target-version: ${{ inputs.target-version }}
+      image-tag: ${{ needs.calculate-image-tag.outputs.image-tag }}
+      # The env context is not available in `with`: keep in sync with IMAGE_REPOSITORY above.
+      image-repository: registry.camunda.cloud/team-zeebe
+      image-registry: ${{ inputs.orchestration-tag != '' && 'docker.io' || 'registry.camunda.cloud' }}
+      camunda-repository: ${{ inputs.orchestration-tag != '' && 'camunda/camunda' || 'team-zeebe/camunda' }}
+      optimize-repository: ${{ inputs.orchestration-tag != '' && 'camunda/optimize' || 'team-zeebe/optimize' }}
+      orchestration-tag: ${{ inputs.orchestration-tag }}
+      optimize-tag: ${{ inputs.optimize-tag }}
+      identity-tag: ${{ inputs.identity-tag }}
+      connectors-tag: ${{ inputs.connectors-tag }}
+      metrics-exporter-built: ${{ needs.build-metrics-exporter-image.result == 'success' }}

@@ -120,6 +120,38 @@ final class FlushFailureTest {
     assertThat(context(LEADER).getRole()).isEqualTo(Role.INACTIVE);
   }
 
+  @Test
+  void shouldNotCommitAnUnflushedEntryWhenTheAppendTimesOut() {
+    // given - drain the election heartbeats, then withhold all traffic to the other follower
+    for (int i = 0; i < 5; i++) {
+      raft.processAllMessage();
+      raft.runUntilDone();
+    }
+    final var leader = context(LEADER);
+    final var next = leader.getLog().getLastIndex() + 1;
+    raft.failFlushes(FOLLOWER);
+    raft.clientAppendOnLeader();
+    raft.runUntilDone(LEADER);
+
+    // when - the append reaches the follower but its Raft thread is stalled. The leader times
+    // out the RPC and sends an empty probe before the follower gets to run either request.
+    raft.getServerProtocol(FOLLOWER).receiveAll();
+    raft.getServerProtocol(LEADER).tick(5_001L);
+    raft.runUntilDone(LEADER);
+    raft.tickHeartbeatTimeout(LEADER);
+    raft.getServerProtocol(FOLLOWER).receiveAll();
+    raft.runUntilDone(FOLLOWER);
+    raft.getServerProtocol(LEADER).receiveAll();
+    raft.runUntilDone(LEADER);
+
+    // then - the leader is the only durable copy, so it cannot commit the entry
+    assertThat(context(OTHER_FOLLOWER).getLog().getLastIndex()).isLessThan(next);
+    assertThat(context(FOLLOWER).getMetaStore().loadLastFlushedIndex()).isLessThan(next);
+    assertThat(context(FOLLOWER).getHealthReport().isDead()).isTrue();
+    assertThat(leader.getCommitIndex()).isLessThan(next);
+    assertThat(matchIndexOnLeader(FOLLOWER)).isLessThan(next);
+  }
+
   private void assertFailed(final MemberId member) {
     final var context = context(member);
     assertThat(context.getRole()).isEqualTo(Role.INACTIVE);

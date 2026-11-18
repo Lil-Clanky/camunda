@@ -1,0 +1,226 @@
+# description: Writes the image tags of a release into load-tests/setup/<folder>/versions.yaml
+#              and opens or updates one pull request per folder (branch release-load-test/<folder>).
+#              Does not deploy anything. The release load test is deployed after the pull request is merged.
+# called-by: release BPMN process (workflow_dispatch via GitHub API, ref: main)
+# test location: .github/scripts/load-test-release-versions.bats
+# type: CI
+# owner: @camunda/reliability-testing
+---
+name: Camunda Update release load test
+run-name: "Camunda Update release load test: ${{ inputs.tag }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Camunda release tag, for example 8.8.47 or 8.11.0-alpha1. Selects the versions.yaml file to update.'
+        type: string
+        required: true
+      optimize-tag:
+        description: 'Docker image tag for Optimize. If empty, the current value is kept.'
+        type: string
+        default: ""
+        required: false
+      identity-tag:
+        description: 'Docker image tag for Identity. If empty, the current value is kept.'
+        type: string
+        default: ""
+        required: false
+      connectors-tag:
+        description: 'Docker image tag for Connectors. If empty, the current value is kept.'
+        type: string
+        default: ""
+        required: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TEST_OWNER: '@camunda/reliability-testing'
+
+permissions: {}
+
+jobs:
+  update-versions:
+    name: Update versions.yaml and open pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {} # All GitHub operations use the GitHub App token
+    # The workflow must run on main: the branch is created from main and the pull request targets main.
+    if: github.ref == 'refs/heads/main'
+    env:
+      # TODO: replace with the Vault path and keys of the "Reliability Testing Automation" GitHub App.
+      APP_VAULT_PATH: secret/data/products/reliability-testing/ci/github.com/apps/camunda/controller-automate
+      APP_ID_VAULT_KEY: TODO_APP_ID_VAULT_KEY
+      APP_PRIVATE_KEY_VAULT_KEY: TODO_APP_PRIVATE_KEY_VAULT_KEY
+      TAG: ${{ inputs.tag }}
+      OPTIMIZE_TAG: ${{ inputs.optimize-tag }}
+      IDENTITY_TAG: ${{ inputs.identity-tag }}
+      CONNECTORS_TAG: ${{ inputs.connectors-tag }}
+    steps:
+      - name: Generate GitHub token
+        id: github-token
+        uses: camunda/infra-global-github-actions/generate-github-app-token-from-vault-secrets@6644ac7ceab8e1b32359cc25a5161c46156fc319 # generate-github-app-token-from-vault-secrets-1.3.0
+        with:
+          github-app-id-vault-key: ${{ env.APP_ID_VAULT_KEY }}
+          github-app-id-vault-path: ${{ env.APP_VAULT_PATH }}
+          github-app-private-key-vault-key: ${{ env.APP_PRIVATE_KEY_VAULT_KEY }}
+          github-app-private-key-vault-path: ${{ env.APP_VAULT_PATH }}
+          vault-auth-method: approle
+          vault-auth-role-id: ${{ secrets.VAULT_ROLE_ID }}
+          vault-auth-secret-id: ${{ secrets.VAULT_SECRET_ID }}
+          vault-url: ${{ secrets.VAULT_ADDR }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Credentials stay: the next steps push the release-load-test/<folder> branch.
+        # zizmor: ignore[artipacked]
+        with:
+          ref: main
+          token: ${{ steps.github-token.outputs.token }}
+
+      - name: Resolve versions.yaml folder
+        id: folder
+        run: |
+          folder=$(.github/scripts/load-test-resolve-release-folder.sh "${TAG}")
+          echo "folder=${folder}" >> "$GITHUB_OUTPUT"
+          echo "Tag ${TAG} uses load-tests/setup/${folder}/versions.yaml"
+
+      - name: Validate Docker image tags
+        env:
+          FOLDER: ${{ steps.folder.outputs.folder }}
+        run: |
+          .github/scripts/load-test-validate-release-image-tags.sh \
+            "${FOLDER}" "${TAG}" "${OPTIMIZE_TAG}" "${IDENTITY_TAG}" "${CONNECTORS_TAG}"
+
+      - name: Update versions.yaml on the release branch
+        id: update
+        env:
+          FOLDER: ${{ steps.folder.outputs.folder }}
+        run: |
+          branch="release-load-test/${FOLDER}"
+          git switch -C "${branch}"
+          .github/scripts/load-test-update-versions-file.sh \
+            "${FOLDER}" "${TAG}" "${OPTIMIZE_TAG}" "${IDENTITY_TAG}" "${CONNECTORS_TAG}"
+
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "load-tests/setup/${FOLDER}/versions.yaml already holds these tags on main."
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "load-tests/setup/${FOLDER}/versions.yaml"
+          git commit -m "ci: run ${TAG} in the ${FOLDER} release load test" \
+            -m "Updates load-tests/setup/${FOLDER}/versions.yaml for the release ${TAG}." \
+            -m "Generated by the workflow ${GITHUB_WORKFLOW} (run ${GITHUB_RUN_ID})."
+          git push --force origin "${branch}"
+
+      - name: Open or update pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.github-token.outputs.token }}
+          BRANCH: ${{ steps.update.outputs.branch }}
+          FOLDER: ${{ steps.folder.outputs.folder }}
+        run: |
+          title="ci: run ${TAG} in the ${FOLDER} release load test"
+          cell() { if [[ -n "$1" ]]; then echo "\`$1\`"; else echo "unchanged"; fi; }
+          {
+            echo "Updates \`load-tests/setup/${FOLDER}/versions.yaml\` for the release \`${TAG}\`."
+            echo
+            echo "The release load test of this folder uses the new tags after this pull request is merged."
+            echo
+            echo "| Component | Tag |"
+            echo "|---|---|"
+            echo "| Camunda | \`${TAG}\` |"
+            echo "| Optimize | $(cell "${OPTIMIZE_TAG}") |"
+            echo "| Identity | $(cell "${IDENTITY_TAG}") |"
+            echo "| Connectors | $(cell "${CONNECTORS_TAG}") |"
+            echo
+            echo "## Related issues"
+            echo
+            echo "- [x] This PR does not need a linked issue"
+          } > "${RUNNER_TEMP}/pr-body.md"
+
+          existing=$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${BRANCH}" --base main --state open \
+            --json number --jq '.[0].number // empty')
+          if [[ -n "${existing}" ]]; then
+            gh pr edit "${existing}" --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file "${RUNNER_TEMP}/pr-body.md"
+            echo "Updated pull request #${existing}"
+          else
+            # The label makes load-test-golden-update.yml regenerate the golden files for the new tags.
+            gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${BRANCH}" \
+              --title "${title}" --body-file "${RUNNER_TEMP}/pr-body.md" --label generate-golden
+          fi
+
+      - name: Observe build status
+        if: always()
+        continue-on-error: true
+        uses: ./.github/actions/observe-build-status
+        with:
+          build_status: ${{ job.status }}
+          secret_vault_address: ${{ secrets.VAULT_ADDR }}
+          secret_vault_roleId: ${{ secrets.VAULT_ROLE_ID }}
+          secret_vault_secretId: ${{ secrets.VAULT_SECRET_ID }}
+
+  notify-on-failure:
+    name: Notify on failure
+    runs-on: ubuntu-latest
+    needs: update-versions
+    if: failure()
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .ci
+            .github
+      - name: Import Slack webhook from Vault
+        id: slack-secrets
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: approle
+          roleId: ${{ secrets.VAULT_ROLE_ID }}
+          secretId: ${{ secrets.VAULT_SECRET_ID }}
+          exportEnv: false
+          secrets: |
+            secret/data/products/camunda/ci/github-actions SLACK_ZEEBOT_RELIABILITY_TESTING_ALERTS_WEBHOOK_URL;
+      - id: slack-notify
+        uses: slackapi/slack-github-action@0d95c9a7becc1e6e297d76df9bc735c44f4cbcbc # v3.0.5
+        with:
+          webhook: ${{ steps.slack-secrets.outputs.SLACK_ZEEBOT_RELIABILITY_TESTING_ALERTS_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":alarm: *Release load test update failed for tag ${{ inputs.tag }}:*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "@reliability-testing-team Please check the related workflow execution: https://github.com/camunda/camunda/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              ]
+            }
+      - name: Observe build status
+        if: always()
+        continue-on-error: true
+        uses: ./.github/actions/observe-build-status
+        with:
+          build_status: ${{ job.status }}
+          secret_vault_address: ${{ secrets.VAULT_ADDR }}
+          secret_vault_roleId: ${{ secrets.VAULT_ROLE_ID }}
+          secret_vault_secretId: ${{ secrets.VAULT_SECRET_ID }}

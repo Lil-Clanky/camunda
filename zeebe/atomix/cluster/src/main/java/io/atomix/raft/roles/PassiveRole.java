@@ -44,19 +44,19 @@ import io.atomix.raft.protocol.ReplicatableRaftRecord;
 import io.atomix.raft.protocol.VoteRequest;
 import io.atomix.raft.protocol.VoteResponse;
 import io.atomix.raft.snapshot.impl.SnapshotChunkImpl;
-import io.atomix.raft.storage.StorageException;
 import io.atomix.raft.storage.log.IndexedRaftLogEntry;
 import io.atomix.raft.storage.log.RaftLogReader;
 import io.atomix.raft.storage.system.Configuration;
+import io.camunda.zeebe.journal.CheckedJournalException;
 import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.JournalException;
 import io.camunda.zeebe.journal.JournalException.InvalidChecksum;
 import io.camunda.zeebe.journal.JournalException.InvalidIndex;
-import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.snapshots.PersistedSnapshot;
 import io.camunda.zeebe.snapshots.ReceivedSnapshot;
 import io.camunda.zeebe.snapshots.SnapshotException.SnapshotAlreadyExistsException;
 import io.camunda.zeebe.snapshots.impl.SnapshotChunkId;
+import io.camunda.zeebe.util.CheckedRunnable;
 import io.camunda.zeebe.util.Either;
 import io.camunda.zeebe.util.logging.ThrottledLogger;
 import java.nio.ByteBuffer;
@@ -89,7 +89,9 @@ public class PassiveRole extends InactiveRole {
 
   @Override
   public CompletableFuture<RaftRole> start() {
-    return super.start().thenRun(this::truncateUncommittedEntries).thenApply(v -> this);
+    return super.start()
+        .thenRun((CheckedRunnable.toUnchecked(this::truncateUncommittedEntries)))
+        .thenApply(v -> this);
   }
 
   @Override
@@ -109,7 +111,7 @@ public class PassiveRole extends InactiveRole {
     return super.stop();
   }
 
-  private void truncateUncommittedEntries() {
+  private void truncateUncommittedEntries() throws CheckedJournalException {
     if (role() == RaftServer.Role.PASSIVE && raft.getLog().getLastIndex() > raft.getCommitIndex()) {
       deleteLogAfter(raft.getCommitIndex());
     }
@@ -117,15 +119,15 @@ public class PassiveRole extends InactiveRole {
 
   /**
    * Deletes the entries after the given index and drops a configuration that came from one of them.
-   * Fails the server if the truncated journal cannot be flushed, see {@link
-   * RaftContext#failOnStorageError(String, Throwable)}.
+   * The journal is truncated before the flush that can fail, so the configuration has to be dropped
+   * in that case too: the retry sees an already truncated log and would never do it.
    */
-  private void deleteLogAfter(final long index) {
+  private void deleteLogAfter(final long index) throws FlushException {
     try {
       raft.getLog().deleteAfter(index);
-    } catch (final FlushException | SyncFailed | StorageException e) {
-      throw raft.failOnStorageError(
-          "Failed to flush the journal after deleting entries after index %d".formatted(index), e);
+    } catch (final FlushException e) {
+      raft.getCluster().dropConfigurationsWithoutLogEntry(index);
+      throw e;
     }
     raft.getCluster().dropConfigurationsWithoutLogEntry(index);
   }
@@ -955,14 +957,15 @@ public class PassiveRole extends InactiveRole {
     raft.setFirstCommitIndex(request.commitIndex(), agreedPersistedIndex);
 
     try {
-      // Make sure all entries are flushed before ack to ensure we have persisted what we
-      // acknowledge
+      //     Make sure all entries are flushed before ack to ensure we have persisted what we
+      //     acknowledge
       flush(lastLogIndex, request.prevLogIndex());
-    } catch (final FlushException | RuntimeException e) {
-      throw raft.failOnStorageError(
-          "Failed to flush the journal before acknowledging entries up to index %d"
-              .formatted(lastLogIndex),
-          e);
+    } catch (final Exception e) {
+      log.warn("Failed to flush appended entries to the log, so they are not acknowledged", e);
+      // The journal fails every later flush too, so these entries are never acknowledged; the
+      // server fails once the journal reports the failure (RaftContext#onStorageFailure).
+      failAppend(request.prevLogIndex(), future);
+      return;
     }
 
     // Update the context commit and global indices.
@@ -1000,7 +1003,12 @@ public class PassiveRole extends InactiveRole {
         // If the last entry term doesn't match the leader's term for the same entry, truncate
         // the log and append the leader's entry.
         if (lastEntry.term() != entry.term()) {
-          deleteLogAfter(index - 1);
+          try {
+            deleteLogAfter(index - 1);
+          } catch (final FlushException e) {
+            return !failAppend(index - 1, future);
+          }
+
           failedToAppend = !appendEntry(index, entry, future);
         }
       } else { // Otherwise, this entry is being appended at the end of the log.
@@ -1054,7 +1062,12 @@ public class PassiveRole extends InactiveRole {
       // truncate
       // the log and append the leader's entry.
       if (existingEntry.term() != entry.term()) {
-        deleteLogAfter(index - 1);
+        try {
+          deleteLogAfter(index - 1);
+        } catch (final FlushException e) {
+          return failAppend(index - 1, future);
+        }
+
         return appendEntry(index, entry, future);
       }
       return true;
@@ -1101,8 +1114,6 @@ public class PassiveRole extends InactiveRole {
     } catch (final InvalidIndex e) {
       failAppend(index - 1, future);
       return false;
-    } catch (final SyncFailed | StorageException e) {
-      throw raft.failOnStorageError("Failed to append entry at index %d".formatted(index), e);
     } catch (final Exception e) {
       log.error("Failed to append entry at index {}", entry.index(), e);
       failAppend(index - 1, future);
@@ -1176,12 +1187,7 @@ public class PassiveRole extends InactiveRole {
    * came from one of them is dropped too.
    */
   private void resetLog(final long firstIndex) {
-    try {
-      raft.getLog().reset(firstIndex);
-    } catch (final SyncFailed | StorageException e) {
-      throw raft.failOnStorageError(
-          "Failed to reset the journal to index %d".formatted(firstIndex), e);
-    }
+    raft.getLog().reset(firstIndex);
     raft.getCluster().reloadStoredConfiguration();
   }
 }

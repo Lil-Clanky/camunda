@@ -50,14 +50,14 @@ final class FlushFailureTest {
   void shouldFailFollowerWhenItFailsToFlushAppendedEntries() {
     // given
     final long lastIndex = context(LEADER).getLog().getLastIndex();
-    raft.failNextFlush(FOLLOWER);
+    raft.failFlushes(FOLLOWER);
 
     // when
     raft.clientAppendOnLeader();
     replicate();
 
     // then - the follower fails instead of rejecting the append and flushing again on a resend
-    assertFailed(FOLLOWER, "Failed to flush the journal before acknowledging entries");
+    assertFailed(FOLLOWER);
 
     // then - it never acknowledges the entry, which is committed with the other follower
     assertThat(context(LEADER).getCommitIndex()).isEqualTo(lastIndex + 1);
@@ -69,16 +69,16 @@ final class FlushFailureTest {
   void shouldNotRecoverFollowerAfterFailedFlush() {
     // given
     final long lastIndex = context(LEADER).getLog().getLastIndex();
-    raft.failNextFlush(FOLLOWER);
+    raft.failFlushes(FOLLOWER);
     raft.clientAppendOnLeader();
     replicate();
 
-    // when - more entries are replicated, and the follower's next flush would succeed
+    // when - more entries are replicated
     raft.clientAppendOnLeader();
     replicate();
 
-    // then
-    assertFailed(FOLLOWER, "Failed to flush the journal before acknowledging entries");
+    // then - the follower stays failed, and never acknowledges them
+    assertFailed(FOLLOWER);
     assertThat(context(LEADER).getCommitIndex()).isEqualTo(lastIndex + 2);
     assertThat(matchIndexOnLeader(FOLLOWER)).isEqualTo(lastIndex);
   }
@@ -87,24 +87,24 @@ final class FlushFailureTest {
   void shouldFailLeaderWhenItFailsToFlushBeforeCommitting() {
     // given
     final long lastIndex = context(LEADER).getLog().getLastIndex();
-    raft.failNextFlush(LEADER);
+    raft.failFlushes(LEADER);
 
     // when
     raft.clientAppendOnLeader();
     replicate();
 
     // then - the leader fails instead of stepping down and keeping the entry
-    assertFailed(LEADER, "Failed to flush the journal before committing index " + (lastIndex + 1));
+    assertFailed(LEADER);
     assertThat(context(LEADER).getCommitIndex()).isEqualTo(lastIndex);
   }
 
   @Test
   void shouldElectNewLeaderAfterLeaderFailedToFlush() {
     // given
-    raft.failNextFlush(LEADER);
+    raft.failFlushes(LEADER);
     raft.clientAppendOnLeader();
     replicate();
-    assertFailed(LEADER, "Failed to flush the journal before committing index");
+    assertFailed(LEADER);
 
     // when
     final var newLeader = electLeaderAmongFollowers();
@@ -120,13 +120,15 @@ final class FlushFailureTest {
     assertThat(context(LEADER).getRole()).isEqualTo(Role.INACTIVE);
   }
 
-  private void assertFailed(final MemberId member, final String expectedMessage) {
+  private void assertFailed(final MemberId member) {
     final var context = context(member);
     assertThat(context.getRole()).isEqualTo(Role.INACTIVE);
     final var health = context.getHealthReport();
     assertThat(health.isDead()).isTrue();
     assertThat(health.getIssue()).isNotNull();
-    assertThat(health.getIssue().throwable()).hasMessageContaining(expectedMessage);
+    assertThat(health.getIssue().throwable())
+        .hasMessageContaining("Failed to persist data")
+        .hasRootCauseMessage("Injected flush failure");
   }
 
   private long matchIndexOnLeader(final MemberId member) {

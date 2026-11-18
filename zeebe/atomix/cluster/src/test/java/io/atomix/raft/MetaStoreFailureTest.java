@@ -56,32 +56,35 @@ final class MetaStoreFailureTest {
     electLeader();
 
     // then - the follower fails instead of voting with a term that may not be on disk
-    assertFailed(FOLLOWER, "Failed to store term");
+    assertFailed(FOLLOWER);
     assertThat(context(FOLLOWER).getLastVotedFor()).isNull();
     assertThat(context(LEADER).getRole()).isEqualTo(Role.LEADER);
   }
 
   @Test
-  void shouldFailWhenConfigurationCannotBeStored() {
+  void shouldFailWhenMetaStoreWriteFailsDuringReconfiguration() {
     // given
     electLeader();
     raft.failNextMetaStoreWrite(FOLLOWER);
 
-    // when - committing the configuration without the leaving member makes the follower store it
+    // when - replicating and committing the configuration without the leaving member makes the
+    // follower write its meta store: the last flushed index, then the configuration
     raft.leave(OTHER_FOLLOWER);
     replicate();
 
     // then
-    assertFailed(FOLLOWER, "Failed to store the configuration");
+    assertFailed(FOLLOWER);
   }
 
-  private void assertFailed(final MemberId member, final String expectedMessage) {
+  private void assertFailed(final MemberId member) {
     final var context = context(member);
     assertThat(context.getRole()).isEqualTo(Role.INACTIVE);
     final var health = context.getHealthReport();
     assertThat(health.isDead()).isTrue();
     assertThat(health.getIssue()).isNotNull();
-    assertThat(health.getIssue().throwable()).hasMessageContaining(expectedMessage);
+    assertThat(health.getIssue().throwable())
+        .hasMessageContaining("Failed to persist data")
+        .hasRootCauseMessage("Injected sync failure");
   }
 
   private void electLeader() {

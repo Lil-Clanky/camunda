@@ -17,6 +17,10 @@ package io.atomix.raft.storage.log;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -27,6 +31,7 @@ import static org.mockito.Mockito.when;
 import io.atomix.cluster.MemberId;
 import io.atomix.raft.cluster.RaftMember.Type;
 import io.atomix.raft.cluster.impl.DefaultRaftMember;
+import io.atomix.raft.protocol.ReplicatableJournalRecord;
 import io.atomix.raft.storage.log.RaftLogFlusher.DirectFlusher;
 import io.atomix.raft.storage.log.RaftLogFlusher.NoopFlusher;
 import io.atomix.raft.storage.log.entry.ApplicationEntry;
@@ -35,15 +40,19 @@ import io.atomix.raft.storage.log.entry.InitialEntry;
 import io.atomix.raft.storage.log.entry.RaftLogEntry;
 import io.atomix.raft.storage.log.entry.SerializedApplicationEntry;
 import io.camunda.zeebe.journal.CheckedJournalException;
+import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.Journal;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.journal.JournalMetaStore;
 import io.camunda.zeebe.journal.JournalMetaStore.InMemory;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Set;
 import java.util.function.Consumer;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -276,10 +285,47 @@ class RaftLogTest {
       final Consumer<Throwable> listener = error -> {};
 
       // when
-      log.setAsyncFlushFailureListener(listener);
+      log.setStorageFailureListener(listener);
 
       // then
       verify(flusher).setAsyncFailureListener(listener);
+    }
+
+    @Test
+    void shouldReportFailedFlush() throws CheckedJournalException {
+      // given - the caller may swallow the exception, e.g. in a future's callback
+      final var journal = mock(Journal.class);
+      final var error = new FlushException(new IOException("Input/output error"));
+      doThrow(error).when(journal).flush();
+      final var log = new RaftLog(journal, new DirectFlusher());
+      final var reported = new ArrayList<Throwable>();
+      log.setStorageFailureListener(reported::add);
+
+      // when
+      final var thrown = catchThrowable(log::flush);
+
+      // then
+      assertThat(thrown).isSameAs(error);
+      assertThat(reported).containsExactly(error);
+    }
+
+    @Test
+    void shouldReportFailedSyncOnAppend() {
+      // given - e.g. syncing the directory after creating the next segment failed
+      final var journal = mock(Journal.class);
+      final var error = new SyncFailed("Failed to sync", new IOException("Input/output error"));
+      when(journal.append(anyLong(), any(byte[].class))).thenThrow(error);
+      final var log = new RaftLog(journal, new DirectFlusher());
+      final var reported = new ArrayList<Throwable>();
+      log.setStorageFailureListener(reported::add);
+
+      // when
+      final var thrown =
+          catchThrowable(() -> log.append(new ReplicatableJournalRecord(1, 1, 1, new byte[1])));
+
+      // then
+      assertThat(thrown).isSameAs(error);
+      assertThat(reported).containsExactly(error);
     }
 
     @Test

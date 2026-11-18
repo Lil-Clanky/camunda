@@ -16,10 +16,8 @@
 package io.atomix.raft.roles;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -46,11 +44,9 @@ import io.camunda.zeebe.journal.CheckedJournalException;
 import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
 import io.camunda.zeebe.journal.JournalException;
 import io.camunda.zeebe.journal.JournalException.InvalidChecksum;
-import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.snapshots.PersistedSnapshot;
 import io.camunda.zeebe.snapshots.ReceivableSnapshotStore;
 import io.camunda.zeebe.snapshots.ReceivedSnapshot;
-import io.camunda.zeebe.util.exception.UnrecoverableException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
@@ -208,6 +204,32 @@ public class PassiveRoleTest {
     // then
     verify(log, never()).flush();
     assertThat(response.lastLogIndex()).isZero();
+  }
+
+  @Test
+  public void shouldNotAcknowledgeEntriesWhenFlushFails() throws CheckedJournalException {
+    // given
+    doThrow(new FlushException(new IOException("Input/output error"))).when(log).flush();
+    when(log.append(any(ReplicatableJournalRecord.class)))
+        .thenReturn(mock(IndexedRaftLogEntry.class));
+    final var request =
+        VersionedAppendRequest.builder()
+            .withTerm(1)
+            .withLeader(MemberId.anonymous())
+            .withPrevLogTerm(0)
+            .withPrevLogIndex(0)
+            .withEntries(List.of(new ReplicatableJournalRecord(1, 1, 1, new byte[1])))
+            .withCommitIndex(1)
+            .build();
+
+    // when
+    final AppendResponse response =
+        role.handleAppend(ProtocolVersionHandler.transform(request)).join();
+
+    // then - neither acknowledged nor committed
+    assertThat(response.succeeded()).isFalse();
+    assertThat(response.lastLogIndex()).isZero();
+    verify(ctx, never()).setCommitIndex(anyLong());
   }
 
   @Test
@@ -378,71 +400,14 @@ public class PassiveRoleTest {
   }
 
   @Test
-  public void shouldFailServerWhenFlushingAppendedEntriesFails() throws CheckedJournalException {
-    // given
-    final var flushError = new FlushException(new IOException("Input/output error"));
-    final var failure = new UnrecoverableException("failed");
-    doThrow(flushError).when(log).flush();
-    when(ctx.failOnStorageError(any(), any())).thenReturn(failure);
-    when(log.append(any(ReplicatableJournalRecord.class)))
-        .thenReturn(mock(IndexedRaftLogEntry.class));
-    final var request =
-        VersionedAppendRequest.builder()
-            .withTerm(1)
-            .withLeader(MemberId.anonymous())
-            .withPrevLogTerm(0)
-            .withPrevLogIndex(0)
-            .withEntries(List.of(new ReplicatableJournalRecord(1, 1, 1, new byte[1])))
-            .withCommitIndex(1)
-            .build();
-
-    // when
-    final var thrown =
-        catchThrowable(() -> role.handleAppend(ProtocolVersionHandler.transform(request)));
-
-    // then - the entry is not acknowledged, and the server fails instead of waiting for a resend
-    assertThat(thrown).isSameAs(failure);
-    verify(ctx).failOnStorageError(any(), eq(flushError));
-    verify(ctx, never()).setCommitIndex(anyLong());
-  }
-
-  @Test
-  public void shouldFailServerWhenAppendFailsToSync() {
-    // given - e.g. syncing the directory after creating the next segment failed
-    final var syncError = new SyncFailed("Failed to sync", new IOException("Input/output error"));
-    final var failure = new UnrecoverableException("failed");
-    when(log.append(any(ReplicatableJournalRecord.class))).thenThrow(syncError);
-    when(ctx.failOnStorageError(any(), any())).thenReturn(failure);
-    final var request =
-        VersionedAppendRequest.builder()
-            .withTerm(1)
-            .withLeader(MemberId.anonymous())
-            .withPrevLogTerm(0)
-            .withPrevLogIndex(0)
-            .withEntries(List.of(new ReplicatableJournalRecord(1, 1, 1, new byte[1])))
-            .withCommitIndex(1)
-            .build();
-
-    // when
-    final var thrown =
-        catchThrowable(() -> role.handleAppend(ProtocolVersionHandler.transform(request)));
-
-    // then - the server fails instead of rejecting the append and waiting for a resend
-    assertThat(thrown).isSameAs(failure);
-    verify(ctx).failOnStorageError(any(), eq(syncError));
-  }
-
-  @Test
-  public void shouldFailServerWhenTruncatingTheLogFailsToFlush() throws CheckedJournalException {
-    // given
-    final var flushError = new FlushException(new IOException("Input/output error"));
-    final var failure = new UnrecoverableException("failed");
+  public void shouldRollBackConfigurationWhenTruncatingTheLogFailsToFlush()
+      throws CheckedJournalException {
+    // given - the journal is truncated before the flush that fails, so the entry is gone
     final var lastEntry = mock(IndexedRaftLogEntry.class);
     when(lastEntry.index()).thenReturn(1L);
     when(lastEntry.term()).thenReturn(2L);
     when(log.getLastEntry()).thenReturn(lastEntry);
-    doThrow(flushError).when(log).deleteAfter(0);
-    when(ctx.failOnStorageError(any(), any())).thenReturn(failure);
+    doThrow(new FlushException(new IOException("flush failed"))).when(log).deleteAfter(0);
     final var request =
         VersionedAppendRequest.builder()
             .withTerm(3)
@@ -454,13 +419,10 @@ public class PassiveRoleTest {
             .build();
 
     // when
-    final var thrown =
-        catchThrowable(() -> role.handleAppend(ProtocolVersionHandler.transform(request)));
+    role.handleAppend(ProtocolVersionHandler.transform(request)).join();
 
-    // then - the leader's entry is neither appended nor acknowledged
-    assertThat(thrown).isSameAs(failure);
-    verify(ctx).failOnStorageError(any(), eq(flushError));
-    verify(log, never()).append(any(ReplicatableJournalRecord.class));
+    // then - the retry would not truncate again, so the configuration must be dropped now
+    verify(ctx.getCluster()).dropConfigurationsWithoutLogEntry(0);
   }
 
   @Test

@@ -39,7 +39,6 @@ import io.camunda.zeebe.test.DynamicAutoCloseable;
 import io.camunda.zeebe.util.Either;
 import io.camunda.zeebe.util.FileUtil;
 import io.camunda.zeebe.util.buffer.DirectBufferWriter;
-import io.camunda.zeebe.util.exception.UnrecoverableException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
@@ -111,8 +110,7 @@ public class ConcurrentBackupCompactionTest extends DynamicAutoCloseable {
                 .withMetaStore(mock(JournalMetaStore.class))
                 .withMaxSegmentSize(128)
                 .build());
-    logCompactor =
-        new LogCompactor(threadContext, raftLog, 3, raftMetrics, UnrecoverableException::new);
+    logCompactor = new LogCompactor(threadContext, raftLog, 3, raftMetrics);
 
     // raftLog just calls journal in the real implementation
     when(raftLog.deleteUntil(anyLong()))

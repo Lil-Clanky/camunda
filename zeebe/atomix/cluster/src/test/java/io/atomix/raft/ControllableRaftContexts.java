@@ -19,7 +19,7 @@ import static io.atomix.raft.impl.RaftContext.State.READY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.entry;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -38,7 +38,6 @@ import io.atomix.raft.protocol.ControllableRaftServerProtocol;
 import io.atomix.raft.protocol.TimeoutNowRequest;
 import io.atomix.raft.roles.LeaderRole;
 import io.atomix.raft.storage.RaftStorage;
-import io.atomix.raft.storage.StorageException;
 import io.atomix.raft.storage.log.IndexedRaftLogEntry;
 import io.atomix.raft.storage.log.RaftLog;
 import io.atomix.raft.storage.log.RaftLogFlusher;
@@ -116,7 +115,7 @@ public final class ControllableRaftContexts {
   private final Map<MemberId, RaftContext> raftServers = new HashMap<>();
   private final Map<MemberId, TestFileBasedSnapshotStore> snapshotStores = new HashMap<>();
   private final Map<MemberId, MeterRegistry> meterRegistries = new HashMap<>();
-  private final Map<MemberId, AtomicBoolean> failNextFlush = new HashMap<>();
+  private final Map<MemberId, AtomicBoolean> failFlushes = new HashMap<>();
   private final Map<MemberId, AtomicBoolean> failNextMetaStoreWrite = new HashMap<>();
   private boolean metaStoreWritesFailable;
   private Duration electionTimeout;
@@ -302,12 +301,16 @@ public final class ControllableRaftContexts {
   }
 
   private RaftThreadContextFactory getRaftThreadContextFactory(final MemberId memberId) {
-    return (factory, uncaughtExceptionHandler) ->
-        deterministicExecutors.computeIfAbsent(
-            memberId,
-            m ->
-                (DeterministicSingleThreadContext)
-                    DeterministicSingleThreadContext.createContext(memberId));
+    return (factory, uncaughtExceptionHandler) -> {
+      final var context =
+          deterministicExecutors.computeIfAbsent(
+              memberId,
+              m ->
+                  (DeterministicSingleThreadContext)
+                      DeterministicSingleThreadContext.createContext(memberId));
+      context.setUncaughtExceptionHandler(uncaughtExceptionHandler);
+      return context;
+    };
   }
 
   private RaftStorage createStorage(
@@ -467,9 +470,12 @@ public final class ControllableRaftContexts {
     }
   }
 
-  /** Makes the next flush of the given member's log fail, like a failed fsync. */
-  public void failNextFlush(final MemberId memberId) {
-    failNextFlush.get(memberId).set(true);
+  /**
+   * Makes the given member's flushes fail from now on, like a journal after a failed fsync, which
+   * fails every later flush too.
+   */
+  public void failFlushes(final MemberId memberId) {
+    failFlushes.get(memberId).set(true);
   }
 
   /**
@@ -481,8 +487,8 @@ public final class ControllableRaftContexts {
   }
 
   /**
-   * Makes the next write of the term, vote or configuration to the given member's meta store fail,
-   * like a failed fsync. Requires {@link #enableMetaStoreWriteFailures()}.
+   * Makes the next write to the given member's meta store fail, like a failed fsync. Requires
+   * {@link #enableMetaStoreWriteFailures()}.
    */
   public void failNextMetaStoreWrite(final MemberId memberId) {
     final var failNext = failNextMetaStoreWrite.get(memberId);
@@ -500,10 +506,11 @@ public final class ControllableRaftContexts {
     }
 
     final var failNext = failNextMetaStoreWrite.computeIfAbsent(memberId, m -> new AtomicBoolean());
+    // fails the write itself, so that the meta store handles the failure as it would a real one
     final Answer<Object> failableWrite =
         invocation -> {
           if (failNext.getAndSet(false)) {
-            throw new StorageException(new IOException("Injected sync failure"));
+            throw new IOException("Injected sync failure");
           }
           return invocation.callRealMethod();
         };
@@ -511,9 +518,7 @@ public final class ControllableRaftContexts {
     doAnswer(
             invocation -> {
               final var metaStore = spy((MetaStore) invocation.callRealMethod());
-              doAnswer(failableWrite).when(metaStore).storeTerm(anyLong());
-              doAnswer(failableWrite).when(metaStore).storeVote(any());
-              doAnswer(failableWrite).when(metaStore).storeConfiguration(any());
+              doAnswer(failableWrite).when(metaStore).write(any(), any(), anyBoolean());
               return metaStore;
             })
         .when(failableStorage)
@@ -522,11 +527,11 @@ public final class ControllableRaftContexts {
   }
 
   private RaftLogFlusher failableDirectFlusher(final MemberId memberId) {
-    final var failNext = failNextFlush.computeIfAbsent(memberId, m -> new AtomicBoolean());
+    final var failing = failFlushes.computeIfAbsent(memberId, m -> new AtomicBoolean());
     return new RaftLogFlusher() {
       @Override
       public void flush(final Journal journal) throws FlushException {
-        if (failNext.getAndSet(false)) {
+        if (failing.get()) {
           throw new FlushException(new IOException("Injected flush failure"));
         }
         journal.flush();

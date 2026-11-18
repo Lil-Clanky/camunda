@@ -21,6 +21,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import io.atomix.cluster.MemberId;
 import io.atomix.raft.RaftException;
 import io.atomix.raft.RaftException.AppendFailureException;
+import io.atomix.raft.RaftException.CommitFailedException;
 import io.atomix.raft.RaftException.NoLeader;
 import io.atomix.raft.RaftServer;
 import io.atomix.raft.cluster.RaftMember;
@@ -43,7 +44,6 @@ import io.atomix.raft.storage.log.IndexedRaftLogEntry;
 import io.camunda.zeebe.snapshots.PersistedSnapshot;
 import io.camunda.zeebe.snapshots.SnapshotChunk;
 import io.camunda.zeebe.snapshots.SnapshotChunkReader;
-import io.camunda.zeebe.util.exception.UnrecoverableException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -619,7 +619,7 @@ final class LeaderAppender {
         raft.setCommitIndex(index);
         completeCommits(index);
         return CompletableFuture.completedFuture(index);
-      } catch (final UnrecoverableException e) {
+      } catch (final CommitFailedException e) {
         return CompletableFuture.failedFuture(e);
       }
     }

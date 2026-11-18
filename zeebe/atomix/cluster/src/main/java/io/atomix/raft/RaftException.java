@@ -87,6 +87,13 @@ public abstract class RaftException extends RuntimeException {
     }
   }
 
+  public static class CommitFailedException extends RaftException {
+
+    public CommitFailedException(final String message, final Object... args) {
+      super(Type.COMMAND_FAILURE, message, args);
+    }
+  }
+
   public static class AppendFailureException extends RaftException {
 
     private final long index;

@@ -18,7 +18,6 @@ package io.atomix.raft.roles;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.AdditionalAnswers.answerVoid;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -50,10 +49,8 @@ import io.atomix.raft.zeebe.ZeebeLogAppender.AppendListener;
 import io.atomix.raft.zeebe.util.TestAppender;
 import io.atomix.utils.concurrent.SingleThreadContext;
 import io.camunda.zeebe.journal.JournalException;
-import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.scheduler.future.CompletableActorFuture;
 import io.camunda.zeebe.snapshots.ReceivableSnapshotStore;
-import io.camunda.zeebe.util.exception.UnrecoverableException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
@@ -171,35 +168,6 @@ public class LeaderRoleTest {
     // then
     assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
     verify(log, timeout(1000).atLeast(3)).append(any(RaftLogEntry.class));
-  }
-
-  @Test
-  public void shouldFailInsteadOfRetryingAppendWhenSyncFails() throws InterruptedException {
-    // given - e.g. syncing the directory after creating the next segment failed
-    final var syncError = new SyncFailed("Failed to sync", new IOException("Input/output error"));
-    final var failure = new UnrecoverableException("failed");
-    when(log.append(any(RaftLogEntry.class))).thenThrow(syncError);
-    when(context.failOnStorageError(any(), any())).thenReturn(failure);
-
-    final AtomicReference<Throwable> caughtError = new AtomicReference<>();
-    final CountDownLatch latch = new CountDownLatch(1);
-    final AppendListener listener =
-        new AppendListener() {
-          @Override
-          public void onWriteError(final Throwable error) {
-            caughtError.set(error);
-            latch.countDown();
-          }
-        };
-
-    // when
-    leaderRole.appendEntry(0, 1, ByteBuffer.allocate(Integer.BYTES).putInt(0, 1), listener);
-
-    // then - appending again could sync the same files again, which may succeed without writing
-    assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
-    assertThat(caughtError.get()).isSameAs(failure);
-    verify(log, times(1)).append(any(RaftLogEntry.class));
-    verify(context).failOnStorageError(any(), eq(syncError));
   }
 
   @Test

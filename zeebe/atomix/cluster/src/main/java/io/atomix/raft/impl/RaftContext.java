@@ -28,6 +28,7 @@ import io.atomix.raft.LeadershipTransferCoordinatorCheck;
 import io.atomix.raft.LeadershipTransferWriteBarrier;
 import io.atomix.raft.RaftApplicationEntryCommittedPositionListener;
 import io.atomix.raft.RaftCommitListener;
+import io.atomix.raft.RaftException.CommitFailedException;
 import io.atomix.raft.RaftRoleChangeListener;
 import io.atomix.raft.RaftServer.Role;
 import io.atomix.raft.RaftThreadContextFactory;
@@ -78,6 +79,7 @@ import io.atomix.raft.zeebe.EntryValidator;
 import io.atomix.utils.concurrent.ThreadContext;
 import io.camunda.cluster.PartitionId;
 import io.camunda.zeebe.journal.CheckedJournalException.FlushException;
+import io.camunda.zeebe.journal.JournalException.SyncFailed;
 import io.camunda.zeebe.journal.SegmentInfo;
 import io.camunda.zeebe.snapshots.PersistedSnapshot;
 import io.camunda.zeebe.snapshots.ReceivableSnapshotStore;
@@ -172,10 +174,8 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
   @SuppressWarnings("java:S3077") // allow volatile here, health is immutable
   private volatile HealthReport health;
 
-  // set once a write to the data directory may not have reached the disk; see failOnStorageError
+  // set once a write to the data directory may not have reached the disk; see failOnStorageFailure
   private volatile UnrecoverableException storageFailure;
-  // false while the constructor runs, which is not on the Raft thread; see failOnStorageError
-  private volatile boolean constructed;
 
   private long lastHeartbeat;
   private final RaftPartitionConfig partitionConfig;
@@ -239,10 +239,6 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
             () ->
                 createThreadContext(
                     "raft-log", partitionId, threadContextFactory, localMemberId.id()));
-    raftLog.setAsyncFlushFailureListener(
-        error ->
-            threadContext.execute(
-                () -> failOnStorageError("Failed to flush the journal asynchronously", error)));
 
     // Open the snapshot store.
     persistedSnapshotStore = storage.getPersistedSnapshotStore();
@@ -265,8 +261,7 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
             threadContext,
             raftLog,
             partitionConfig.getPreferSnapshotReplicationThreshold(),
-            new RaftServiceMetrics(name, meterRegistry),
-            this::failOnStorageError);
+            new RaftServiceMetrics(name, meterRegistry));
 
     snapshotChunkSize = partitionConfig.getSnapshotChunkSize();
 
@@ -307,7 +302,10 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
       // message from other healthy replicas.
       setTerm(raftLog.getLastEntry().term());
     }
-    constructed = true;
+
+    // Only now: a write that fails while this server is created fails its creation instead.
+    meta.setWriteFailureListener(this::onStorageFailure);
+    raftLog.setStorageFailureListener(this::onStorageFailure);
   }
 
   private ThreadContext createThreadContext(
@@ -338,13 +336,39 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
 
   private void onUncaughtException(final Throwable error) {
     if (storageFailure != null) {
-      // most likely the failure thrown by failOnStorageError, which already failed this server
+      // the server already failed, most likely because of this storage failure
       LOGGER.debug("An uncaught exception occurred after a storage failure", error);
+      return;
+    }
+
+    if (isStorageFailure(error)) {
+      failOnStorageFailure(error);
       return;
     }
 
     LOGGER.error("An uncaught exception occurred, transition to inactive role", error);
     failServer(error);
+  }
+
+  /**
+   * Called by the journal and the meta store when a write to them may not have reached the disk,
+   * possibly from another thread. The write's caller gets the failure as an exception too, but may
+   * not propagate it: e.g. when it runs in a future's callback, the failure ends up in that future.
+   */
+  private void onStorageFailure(final Throwable cause) {
+    threadContext.execute(() -> failOnStorageFailure(cause));
+  }
+
+  /** Whether the error, or one of its causes, is a failed write to the data directory. */
+  public static boolean isStorageFailure(final Throwable error) {
+    for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+      if (cause instanceof FlushException
+          || cause instanceof SyncFailed
+          || cause instanceof StorageException) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -358,35 +382,21 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
    * be trusted again after a restart, and the replica has to be recovered manually (e.g. by
    * deleting its data and letting it replicate from the other replicas).
    *
-   * <p>Must be called on the Raft thread, or from the constructor, where it only returns the
-   * failure: throwing it fails the creation of this server. The caller should throw the returned
-   * exception, so that it does not act on the write that may not be on disk, e.g. acknowledge
-   * appended entries.
-   *
-   * @param message describes which write failed
-   * @param cause the failure of the write or its sync
-   * @return the failure to throw
+   * <p>That this may run a few tasks after the write failed is safe: the journal and the meta store
+   * reject every write after a failed one, so nothing written since can be acknowledged as
+   * persisted.
    */
-  public UnrecoverableException failOnStorageError(final String message, final Throwable cause) {
-    final var error =
-        new UnrecoverableException(
-            message
-                + "; data written since the last successful sync may not be on disk, so this replica must be recovered manually",
-            cause);
-    if (!constructed) {
-      return error;
-    }
-
-    checkThread();
+  private void failOnStorageFailure(final Throwable cause) {
     if (storageFailure != null) {
-      storageFailure.addSuppressed(error);
-      return error;
+      return;
     }
 
-    LOGGER.error("Failed to persist data, transition to inactive role", error);
-    storageFailure = error;
-    failServer(error);
-    return error;
+    storageFailure =
+        new UnrecoverableException(
+            "Failed to persist data: data written since the last successful sync may not be on disk, so this replica must be recovered manually",
+            cause);
+    LOGGER.error("Failed to persist data, transition to inactive role", storageFailure);
+    failServer(storageFailure);
   }
 
   private void failServer(final Throwable error) {
@@ -481,8 +491,7 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
 
     final CompletableFuture<R> future = new CompletableFuture<>();
     threadContext.execute(
-        () -> {
-          try {
+        () ->
             role.shouldAcceptRequest(request)
                 .ifRightOrLeft(
                     ignore ->
@@ -501,15 +510,7 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
                           responseBuilder.get().withStatus(Status.ERROR).withError(error).build();
                       LOGGER.trace("Sending {}", response);
                       future.complete(response);
-                    });
-          } catch (final UnrecoverableException e) {
-            if (storageFailure == null) {
-              throw e;
-            }
-            // thrown by failOnStorageError, which already failed this server
-            future.completeExceptionally(e);
-          }
-        });
+                    }));
 
     return future;
   }
@@ -655,9 +656,9 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
         // leader counts itself in quorum, so in order to commit the leader must persist
         try {
           raftLog.flush();
-        } catch (final FlushException | RuntimeException e) {
-          throw failOnStorageError(
-              "Failed to flush the journal before committing index %d".formatted(commitIndex), e);
+        } catch (final FlushException e) {
+          throw new CommitFailedException(
+              "Failed to commit index %s, as the journal could not be flushed: %s", commitIndex, e);
         }
       }
       raftLog.setCommitIndex(commitIndex);
@@ -1195,12 +1196,9 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
     // If we've already voted for another candidate in this term then the last voted for candidate
     // cannot be overridden.
     checkState(!(lastVotedFor != null && candidate != null), "Already voted for another candidate");
+    // store before remembering it, so that a vote whose write failed is never granted again
+    meta.storeVote(candidate);
     lastVotedFor = candidate;
-    try {
-      meta.storeVote(lastVotedFor);
-    } catch (final StorageException e) {
-      throw failOnStorageError("Failed to store the vote for %s".formatted(candidate), e);
-    }
 
     if (candidate != null) {
       LOGGER.debug("Voted for {}", candidate);
@@ -1358,15 +1356,12 @@ public class RaftContext implements AutoCloseable, HealthMonitorable {
    */
   public void setTerm(final long term) {
     if (term > this.term) {
+      // store before acting on it, so that a term whose write failed is never used
+      meta.storeTerm(term);
+      meta.storeVote(null);
       this.term = term;
       leader = null;
       lastVotedFor = null;
-      try {
-        meta.storeTerm(this.term);
-        meta.storeVote(lastVotedFor);
-      } catch (final StorageException e) {
-        throw failOnStorageError("Failed to store term %d".formatted(term), e);
-      }
       LOGGER.debug("Set term {}", term);
     }
   }

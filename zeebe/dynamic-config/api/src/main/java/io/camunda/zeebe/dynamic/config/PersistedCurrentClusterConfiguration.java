@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.zip.CRC32C;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The multi-partition-group counterpart of {@link PersistedClusterConfiguration}. Reads and writes
@@ -54,6 +55,8 @@ public final class PersistedCurrentClusterConfiguration {
   private final Path configurationFile;
   private final ClusterConfigurationSerializer serializer;
   private CurrentClusterConfiguration configuration;
+  // the first failed write; afterwards, the file may hold either configuration, see update
+  private @Nullable IOException writeFailure;
 
   private PersistedCurrentClusterConfiguration(
       final Path configurationFile,
@@ -92,11 +95,31 @@ public final class PersistedCurrentClusterConfiguration {
     return configuration;
   }
 
+  /**
+   * Persists the configuration, replacing the previous one.
+   *
+   * <p>After a failed write, every later update fails: depending on where it failed, the file may
+   * hold the previous configuration or the one that failed to be written, and retrying would sync
+   * the same directory again, which may succeed without persisting anything. A restart reloads
+   * whichever configuration is on disk.
+   *
+   * @throws IOException if writing fails, or a previous write failed
+   */
   public void update(final CurrentClusterConfiguration updatedConfiguration) throws IOException {
+    if (writeFailure != null) {
+      throw new IOException(
+          "Expected to update the cluster configuration, but a previous write failed",
+          writeFailure);
+    }
     if (configuration.equals(updatedConfiguration)) {
       return;
     }
-    writeToFile(updatedConfiguration, configurationFile, serializer);
+    try {
+      writeToFile(updatedConfiguration, configurationFile, serializer);
+    } catch (final IOException e) {
+      writeFailure = e;
+      throw e;
+    }
     configuration = updatedConfiguration;
   }
 

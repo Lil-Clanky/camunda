@@ -28,7 +28,7 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class RoleCreateProcessor extends IdentityCommandProcessor<RoleRecord> {
+public class RoleCreateProcessor extends AbstractIdentityCommandProcessor<RoleRecord> {
 
   private static final String ROLE_ALREADY_EXISTS_ERROR_MESSAGE =
       "Expected to create role with ID '%s', but a role with this ID already exists";

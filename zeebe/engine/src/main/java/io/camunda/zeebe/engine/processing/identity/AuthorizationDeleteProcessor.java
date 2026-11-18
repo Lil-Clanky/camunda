@@ -36,7 +36,8 @@ import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 
 @NullMarked
-public class AuthorizationDeleteProcessor extends IdentityCommandProcessor<AuthorizationRecord> {
+public class AuthorizationDeleteProcessor
+    extends AbstractIdentityCommandProcessor<AuthorizationRecord> {
 
   public static final String AUTHORIZATION_OWNER_PROTECTED_ERROR_MESSAGE =
       "Expected to delete authorization with key %s, but it belongs to default role '%s' "

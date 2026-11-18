@@ -39,14 +39,14 @@ import org.jspecify.annotations.NullMarked;
  * #processDistributedCommand} is not affected.
  */
 @NullMarked
-public abstract class IdentityCommandProcessor<T extends UnifiedRecordValue>
+public abstract class AbstractIdentityCommandProcessor<T extends UnifiedRecordValue>
     implements DistributedTypedRecordProcessor<T> {
 
   private final PolicyUpdateBehavior policyUpdateBehavior;
   private final TypedRejectionWriter rejectionWriter;
   private final TypedResponseWriter responseWriter;
 
-  protected IdentityCommandProcessor(
+  protected AbstractIdentityCommandProcessor(
       final PolicyUpdateState policyUpdateState, final Writers writers) {
     policyUpdateBehavior = new PolicyUpdateBehavior(policyUpdateState, writers.state());
     rejectionWriter = writers.rejection();

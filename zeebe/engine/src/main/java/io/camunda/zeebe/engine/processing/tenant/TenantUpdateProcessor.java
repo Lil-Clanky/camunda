@@ -9,7 +9,7 @@ package io.camunda.zeebe.engine.processing.tenant;
 
 import io.camunda.zeebe.engine.processing.Rejection;
 import io.camunda.zeebe.engine.processing.distribution.CommandDistributionBehavior;
-import io.camunda.zeebe.engine.processing.identity.IdentityCommandProcessor;
+import io.camunda.zeebe.engine.processing.identity.AbstractIdentityCommandProcessor;
 import io.camunda.zeebe.engine.processing.identity.PermissionsBehavior;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.StateWriter;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.TypedResponseWriter;
@@ -27,7 +27,7 @@ import io.camunda.zeebe.protocol.record.value.PermissionType;
 import io.camunda.zeebe.stream.api.records.TypedRecord;
 import io.camunda.zeebe.stream.api.state.KeyGenerator;
 
-public class TenantUpdateProcessor extends IdentityCommandProcessor<TenantRecord> {
+public class TenantUpdateProcessor extends AbstractIdentityCommandProcessor<TenantRecord> {
 
   private final TenantState tenantState;
   private final PermissionsBehavior permissionsBehavior;

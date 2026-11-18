@@ -36,7 +36,7 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class RoleDeleteProcessor extends IdentityCommandProcessor<RoleRecord> {
+public class RoleDeleteProcessor extends AbstractIdentityCommandProcessor<RoleRecord> {
 
   public static final String ROLE_NOT_FOUND_ERROR_MESSAGE =
       "Expected to delete role with ID '%s', but a role with this ID doesn't exist.";

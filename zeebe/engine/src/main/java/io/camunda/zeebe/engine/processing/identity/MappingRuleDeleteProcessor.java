@@ -43,7 +43,8 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class MappingRuleDeleteProcessor extends IdentityCommandProcessor<MappingRuleRecord> {
+public class MappingRuleDeleteProcessor
+    extends AbstractIdentityCommandProcessor<MappingRuleRecord> {
 
   private static final String MAPPING_RULE_NOT_FOUND_ERROR_MESSAGE =
       "Expected to delete mapping rule with id '%s', but a mapping rule with this id does not exist.";

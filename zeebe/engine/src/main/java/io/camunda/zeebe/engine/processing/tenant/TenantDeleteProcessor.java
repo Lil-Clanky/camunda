@@ -9,7 +9,7 @@ package io.camunda.zeebe.engine.processing.tenant;
 
 import io.camunda.zeebe.engine.processing.Rejection;
 import io.camunda.zeebe.engine.processing.distribution.CommandDistributionBehavior;
-import io.camunda.zeebe.engine.processing.identity.IdentityCommandProcessor;
+import io.camunda.zeebe.engine.processing.identity.AbstractIdentityCommandProcessor;
 import io.camunda.zeebe.engine.processing.identity.PermissionsBehavior;
 import io.camunda.zeebe.engine.processing.identity.adapter.AuthorizationScopeStateAdapter;
 import io.camunda.zeebe.engine.processing.identity.adapter.MembershipStateAdapter;
@@ -37,7 +37,7 @@ import io.camunda.zeebe.protocol.record.value.PermissionType;
 import io.camunda.zeebe.stream.api.records.TypedRecord;
 import io.camunda.zeebe.stream.api.state.KeyGenerator;
 
-public class TenantDeleteProcessor extends IdentityCommandProcessor<TenantRecord> {
+public class TenantDeleteProcessor extends AbstractIdentityCommandProcessor<TenantRecord> {
 
   private static final String TENANT_NOT_FOUND_ERROR_MESSAGE =
       "Expected to delete tenant with id '%s', but no tenant with this id exists.";

@@ -10,7 +10,7 @@ package io.camunda.zeebe.engine.processing.tenant;
 import io.camunda.security.configuration.EngineSecurityConfig;
 import io.camunda.zeebe.engine.processing.Rejection;
 import io.camunda.zeebe.engine.processing.distribution.CommandDistributionBehavior;
-import io.camunda.zeebe.engine.processing.identity.IdentityCommandProcessor;
+import io.camunda.zeebe.engine.processing.identity.AbstractIdentityCommandProcessor;
 import io.camunda.zeebe.engine.processing.identity.PermissionsBehavior;
 import io.camunda.zeebe.engine.processing.identity.adapter.MembershipStateAdapter;
 import io.camunda.zeebe.engine.processing.streamprocessor.writers.SideEffectWriter;
@@ -37,7 +37,7 @@ import io.camunda.zeebe.stream.api.records.TypedRecord;
 import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import io.camunda.zeebe.util.Either;
 
-public class TenantAddEntityProcessor extends IdentityCommandProcessor<TenantRecord> {
+public class TenantAddEntityProcessor extends AbstractIdentityCommandProcessor<TenantRecord> {
 
   private static final String TENANT_NOT_FOUND_ERROR_MESSAGE =
       "Expected to add entity to tenant with ID '%s', but no tenant with this ID exists.";

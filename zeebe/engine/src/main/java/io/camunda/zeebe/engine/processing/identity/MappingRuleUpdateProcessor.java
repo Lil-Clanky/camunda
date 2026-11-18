@@ -24,7 +24,8 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class MappingRuleUpdateProcessor extends IdentityCommandProcessor<MappingRuleRecord> {
+public class MappingRuleUpdateProcessor
+    extends AbstractIdentityCommandProcessor<MappingRuleRecord> {
   private static final String MAPPING_RULE_NULL_VALUE_ERROR_MESSAGE =
       "Expected to update mapping rule with claimName '%s' and claimValue '%s' and name '%s' and mappingRuleId '%s', but at least one of them is null.";
   private static final String MAPPING_RULE_SAME_CLAIM_ALREADY_EXISTS_ERROR_MESSAGE =

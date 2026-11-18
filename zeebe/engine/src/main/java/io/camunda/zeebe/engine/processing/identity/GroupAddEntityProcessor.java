@@ -33,7 +33,7 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class GroupAddEntityProcessor extends IdentityCommandProcessor<GroupRecord> {
+public class GroupAddEntityProcessor extends AbstractIdentityCommandProcessor<GroupRecord> {
   private static final String ENTITY_ALREADY_ASSIGNED_ERROR_MESSAGE =
       "Expected to add entity with ID '%s' to group with ID '%s', but the entity is already assigned to this group.";
 

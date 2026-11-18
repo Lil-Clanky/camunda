@@ -27,7 +27,7 @@ import org.jspecify.annotations.NullMarked;
  *
  * <p>The identity processors use it to fail the update when one of its commands cannot be applied,
  * and to reject the commands that follow once the update has failed; see {@code
- * IdentityCommandProcessor}.
+ * AbstractIdentityCommandProcessor}.
  *
  * <p>Distributed commands don't carry the reference, so this only works on the partition that
  * applies the update.

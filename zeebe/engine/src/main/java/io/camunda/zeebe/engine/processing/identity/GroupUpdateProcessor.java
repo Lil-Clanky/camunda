@@ -25,7 +25,7 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class GroupUpdateProcessor extends IdentityCommandProcessor<GroupRecord> {
+public class GroupUpdateProcessor extends AbstractIdentityCommandProcessor<GroupRecord> {
 
   private final GroupState groupState;
   private final KeyGenerator keyGenerator;

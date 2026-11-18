@@ -29,7 +29,8 @@ import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 
 @NullMarked
-public class AuthorizationUpdateProcessor extends IdentityCommandProcessor<AuthorizationRecord> {
+public class AuthorizationUpdateProcessor
+    extends AbstractIdentityCommandProcessor<AuthorizationRecord> {
 
   private static final Logger LOG = Loggers.ENGINE_IDENTITY_LOGGER;
 

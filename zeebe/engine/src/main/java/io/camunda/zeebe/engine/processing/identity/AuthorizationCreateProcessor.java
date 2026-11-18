@@ -28,7 +28,8 @@ import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 
 @NullMarked
-public class AuthorizationCreateProcessor extends IdentityCommandProcessor<AuthorizationRecord> {
+public class AuthorizationCreateProcessor
+    extends AbstractIdentityCommandProcessor<AuthorizationRecord> {
 
   private static final Logger LOG = Loggers.ENGINE_IDENTITY_LOGGER;
 

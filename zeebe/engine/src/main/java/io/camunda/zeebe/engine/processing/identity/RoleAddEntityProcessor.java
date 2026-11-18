@@ -34,7 +34,7 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class RoleAddEntityProcessor extends IdentityCommandProcessor<RoleRecord> {
+public class RoleAddEntityProcessor extends AbstractIdentityCommandProcessor<RoleRecord> {
 
   public static final String ROLE_NOT_FOUND_ERROR_MESSAGE =
       "Expected to update role with ID '%s', but a role with this ID does not exist.";

@@ -35,7 +35,7 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class GroupDeleteProcessor extends IdentityCommandProcessor<GroupRecord> {
+public class GroupDeleteProcessor extends AbstractIdentityCommandProcessor<GroupRecord> {
 
   private static final String GROUP_NOT_FOUND_ERROR_MESSAGE =
       "Expected to delete group with ID '%s', but a group with this ID does not exist.";

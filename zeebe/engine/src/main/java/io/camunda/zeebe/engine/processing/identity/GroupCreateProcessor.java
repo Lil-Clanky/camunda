@@ -29,7 +29,7 @@ import io.camunda.zeebe.stream.api.state.KeyGenerator;
 import org.jspecify.annotations.NullMarked;
 
 @NullMarked
-public class GroupCreateProcessor extends IdentityCommandProcessor<GroupRecord> {
+public class GroupCreateProcessor extends AbstractIdentityCommandProcessor<GroupRecord> {
 
   public static final String GROUP_ALREADY_EXISTS_ERROR_MESSAGE =
       "Expected to create group with ID '%s', but a group with this ID already exists.";

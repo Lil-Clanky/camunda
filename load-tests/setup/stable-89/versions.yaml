@@ -1,6 +1,8 @@
 orchestration:
   image:
-    # renovate: datasource=docker depName=docker.io/camunda/camunda
+    # CUSTOMIZATION: pinned to the released version instead of the chart default.
+    # Renovate does not update this tag: the update-release-load-test workflow
+    # sets it when a release is published.
     tag: "8.9.28"
 optimize:
   image:

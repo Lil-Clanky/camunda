@@ -31,7 +31,7 @@
         "load-tests/setup/*/versions.yaml",
       ],
       matchStrings: [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( depType=(?<depType>\\S+))?\\s+tag: \"(?<currentValue>[^\"]+)\"",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+tag: \"(?<currentValue>[^\"]+)\"",
       ],
       versioningTemplate: "semver",
     },
@@ -96,14 +96,6 @@
       // Bump the Docker image tags of the load test versions.yaml files ; keep the same major.minor
       matchFileNames: ["load-tests/setup/*/versions.yaml"],
       allowedVersions: "<= {{{major}}}.{{{minor}}}",
-    },
-
-    {
-      // The orchestration image of the 'main' load test follows the newest tag, including pre-releases
-      matchFileNames: ["load-tests/setup/*/versions.yaml"],
-      matchDepTypes: ["main"],
-      ignoreUnstable: false,
-      allowedVersions: "/.*/",
     },
 
     {

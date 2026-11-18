@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Named.named;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -255,6 +256,39 @@ class MetaStoreTest {
       final Configuration readConfig = metaStore.loadConfiguration();
 
       assertThat(readConfig).isEqualTo(config);
+    }
+
+    @Test
+    void shouldRecoverAWholeConfigurationAfterATornWrite() throws IOException {
+      // given - a single member configuration, and a joint one of which only a prefix is written
+      final var a = new DefaultRaftMember(MemberId.from("0"), Type.ACTIVE, Instant.EPOCH);
+      final var b = new DefaultRaftMember(MemberId.from("1"), Type.ACTIVE, Instant.EPOCH);
+      final var previous = new Configuration(1, 1, 100, List.of(a));
+      final var updated = new Configuration(2, 1, 100, List.of(a, b), List.of(a));
+      metaStore.storeConfiguration(previous);
+      metaStore = spy(metaStore);
+      doAnswer(
+              call -> {
+                final ByteBuffer buffer = call.getArgument(0);
+                final FileChannel file = call.getArgument(1);
+                final var prefix = buffer.duplicate().position(0).limit(32);
+                while (prefix.hasRemaining()) {
+                  file.write(prefix, prefix.position());
+                }
+                file.force(true);
+                throw new IOException("Input/output error");
+              })
+          .when(metaStore)
+          .write(any(), any(), anyBoolean());
+
+      // when
+      assertThatThrownBy(() -> metaStore.storeConfiguration(updated))
+          .isInstanceOf(StorageException.class);
+      metaStore.close();
+      metaStore = new MetaStore(storage, meterRegistry);
+
+      // then - not the new index with the old members
+      assertThat(metaStore.loadConfiguration()).isIn(previous, updated);
     }
 
     @Test

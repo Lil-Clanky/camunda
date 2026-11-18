@@ -26,6 +26,7 @@ import io.atomix.raft.storage.StorageException;
 import io.atomix.raft.storage.serializer.MetaEncoder;
 import io.atomix.raft.storage.serializer.MetaStoreSerializer;
 import io.camunda.zeebe.journal.JournalMetaStore;
+import io.camunda.zeebe.util.FileUtil;
 import io.camunda.zeebe.util.VisibleForTesting;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.File;
@@ -33,6 +34,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -50,7 +52,6 @@ import org.slf4j.LoggerFactory;
 public class MetaStore implements JournalMetaStore, AutoCloseable {
 
   private final Logger log = LoggerFactory.getLogger(getClass());
-  private final FileChannel configurationChannel;
   private final File confFile;
   private final MetaStoreSerializer serializer = new MetaStoreSerializer();
   private final FileChannel metaFileChannel;
@@ -120,8 +121,6 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
           StandardOpenOption.WRITE,
           StandardOpenOption.SYNC);
     }
-    configurationChannel =
-        FileChannel.open(confFile.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE);
   }
 
   /**
@@ -230,7 +229,27 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
   public synchronized void storeConfiguration(final Configuration configuration) {
     log.trace("Store configuration {}", configuration);
     final var buffer = serializer.writeConfiguration(configuration);
-    writeToFile(buffer, configurationChannel, true);
+    failOnWriteFailure(() -> replaceConfigurationFile(buffer));
+  }
+
+  /**
+   * Writes a new configuration file and replaces the old one with it, rather than overwriting the
+   * old one in place: a write that is torn, e.g. by a crash or a failed sync, would otherwise leave
+   * a mix of both configurations, such as the new index with the old members.
+   */
+  private void replaceConfigurationFile(final ByteBuffer buffer) throws IOException {
+    final var target = confFile.toPath();
+    final var tempFile = target.resolveSibling(target.getFileName() + ".tmp");
+    try (final var channel =
+        FileChannel.open(
+            tempFile,
+            StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE,
+            StandardOpenOption.TRUNCATE_EXISTING)) {
+      write(buffer, channel, true);
+    }
+    FileUtil.moveDurably(
+        tempFile, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
   }
 
   /**
@@ -240,10 +259,7 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
    */
   public synchronized Configuration loadConfiguration() {
     try {
-      configurationChannel.position(0);
-      final ByteBuffer buffer = ByteBuffer.allocate((int) confFile.length());
-      configurationChannel.read(buffer);
-      buffer.position(0);
+      final ByteBuffer buffer = ByteBuffer.wrap(Files.readAllBytes(confFile.toPath()));
       return serializer.readConfiguration(buffer);
     } catch (final IOException e) {
       throw new StorageException(e);
@@ -260,7 +276,6 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
         log.warn("Failed to write to metaStore before closing", e);
       }
       metaFileChannel.close();
-      configurationChannel.close();
     } catch (final IOException e) {
       log.warn("Failed to close metastore", e);
     }
@@ -310,6 +325,10 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
    * persisted.
    */
   private void writeToFile(final ByteBuffer buffer, final FileChannel file, final boolean force) {
+    failOnWriteFailure(() -> write(buffer, file, force));
+  }
+
+  private void failOnWriteFailure(final IoWrite write) {
     final var previousFailure = writeFailure;
     if (previousFailure != null) {
       throw new StorageException(
@@ -317,7 +336,7 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
     }
 
     try {
-      write(buffer, file, force);
+      write.run();
     } catch (final IOException e) {
       writeFailure = e;
       final var failure = new StorageException("Failed to write to the meta store", e);
@@ -338,5 +357,10 @@ public class MetaStore implements JournalMetaStore, AutoCloseable {
     if (force) {
       file.force(true);
     }
+  }
+
+  @FunctionalInterface
+  private interface IoWrite {
+    void run() throws IOException;
   }
 }

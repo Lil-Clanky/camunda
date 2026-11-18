@@ -67,7 +67,8 @@ final class DropDataDirectoryPageCacheStep extends AbstractBrokerStartupStep {
   }
 
   private void dropPageCache(final Path dataDirectory) {
-    try (final var files = Files.walk(dataDirectory)) {
+    // the real path, as walking a symbolic link to the directory would only visit the link
+    try (final var files = Files.walk(dataDirectory.toRealPath())) {
       final var droppedFiles =
           files.filter(Files::isRegularFile).filter(posixFs::dropPageCache).count();
       LOG.debug(

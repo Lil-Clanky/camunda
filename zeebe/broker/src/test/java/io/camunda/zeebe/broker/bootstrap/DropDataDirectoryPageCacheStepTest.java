@@ -68,6 +68,23 @@ final class DropDataDirectoryPageCacheStepTest {
   }
 
   @Test
+  void shouldDropPageCacheWhenDataDirectoryIsSymbolicLink() throws Exception {
+    // given
+    final var realDirectory = root.resolve("real-data");
+    final var file = realDirectory.resolve("default/partitions/1/journal-1.log");
+    Files.createDirectories(file.getParent());
+    Files.writeString(file, "content");
+    Files.createSymbolicLink(dataDirectory, realDirectory);
+
+    // when
+    final var started = sut.startup(context);
+
+    // then
+    assertThat(started).succeedsWithin(TIME_OUT);
+    verify(posixFs).dropPageCache(file.toRealPath());
+  }
+
+  @Test
   void shouldStartWhenPageCacheCannotBeDropped() throws Exception {
     // given
     final var file = dataDirectory.resolve("file");

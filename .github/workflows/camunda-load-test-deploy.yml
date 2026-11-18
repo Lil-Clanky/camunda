@@ -90,48 +90,56 @@ on:
         type: string
         default: "main"
         required: false
-      image-tag:
-        description: 'Image tag of the load test client and of the images built in the same run'
+      load-test-image-tag:
+        description: 'Image tag of the load test client (starter and worker) and, when built, of the metrics exporter'
         type: string
         required: true
-      image-repository:
+      load-test-image-repository:
         description: 'Repository of the load test client images (starter and worker)'
         type: string
         required: true
-      image-registry:
-        description: 'Registry of the orchestration and Optimize images'
+      orchestration-registry:
+        description: 'Orchestration image registry. Empty keeps the value of the setup folder.'
         type: string
-        required: true
-      camunda-repository:
-        description: 'Repository of the orchestration image'
+        default: ""
+        required: false
+      orchestration-repository:
+        description: 'Orchestration image repository. Empty keeps the value of the setup folder.'
         type: string
-        required: true
-      optimize-repository:
-        description: 'Repository of the Optimize image, used when Optimize is built from source'
-        type: string
-        required: true
+        default: ""
+        required: false
       orchestration-tag:
-        description: 'Docker Hub orchestration tag. Empty when the orchestration image is built from source.'
+        description: 'Orchestration image tag. Empty keeps the value of the setup folder.'
+        type: string
+        default: ""
+        required: false
+      optimize-registry:
+        description: 'Optimize image registry. Empty keeps the value of the setup folder.'
+        type: string
+        default: ""
+        required: false
+      optimize-repository:
+        description: 'Optimize image repository. Empty keeps the value of the setup folder.'
         type: string
         default: ""
         required: false
       optimize-tag:
-        description: 'Explicit Optimize image tag'
+        description: 'Optimize image tag. Empty keeps the value of the setup folder.'
         type: string
         default: ""
         required: false
       identity-tag:
-        description: 'Explicit Identity image tag'
+        description: 'Identity image tag. Empty keeps the value of the setup folder.'
         type: string
         default: ""
         required: false
       connectors-tag:
-        description: 'Explicit Connectors image tag'
+        description: 'Connectors image tag. Empty keeps the value of the setup folder.'
         type: string
         default: ""
         required: false
       metrics-exporter-built:
-        description: 'Whether the metrics exporter image was built with image-tag. When false, the latest tag is used.'
+        description: 'Whether the metrics exporter image was built with load-test-image-tag. When false, the latest tag is used.'
         type: boolean
         default: false
         required: false
@@ -143,24 +151,25 @@ env:
   CLUSTER: camunda-benchmark-prod  # change this to "camunda-benchmark-dev" when experimenting
   TELEPORT_JOIN_TOKEN: infra-benchmark-prod-github-action-zeebe  # change this to "infra-benchmark-dev-github-action-zeebe" when experimenting
 
-  CALCULATED_IMAGE_TAG: ${{ inputs.image-tag }}
-  CAMUNDA_REPO: ${{ inputs.camunda-repository }}
   CONNECTORS_TAG: ${{ inputs.connectors-tag }}
   ENABLE_CHAOS: ${{ inputs.enable-chaos }}
   ENABLE_OPTIMIZE: ${{ inputs.enable-optimize }}
   ENABLE_OPTIMIZE_METRICS: ${{ inputs.enable-optimize-report-metrics }}
   IDENTITY_TAG: ${{ inputs.identity-tag }}
-  IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+  LOAD_TEST_IMAGE_REPOSITORY: ${{ inputs.load-test-image-repository }}
+  LOAD_TEST_IMAGE_TAG: ${{ inputs.load-test-image-tag }}
   LOAD_TEST_LOAD: ${{ inputs.load-test-load }}
   LOAD_TEST_SETUP_HELM_VALUES: ${{ inputs.load-test-setup-helm-values }}
   METRICS_EXPORTER_BUILT: ${{ inputs.metrics-exporter-built }}
-  OPTIMIZE_REPO: ${{ inputs.optimize-repository }}
+  OPTIMIZE_REGISTRY: ${{ inputs.optimize-registry }}
+  OPTIMIZE_REPOSITORY: ${{ inputs.optimize-repository }}
   OPTIMIZE_TAG: ${{ inputs.optimize-tag }}
+  ORCHESTRATION_REGISTRY: ${{ inputs.orchestration-registry }}
+  ORCHESTRATION_REPOSITORY: ${{ inputs.orchestration-repository }}
   ORCHESTRATION_TAG: ${{ inputs.orchestration-tag }}
   PERFORM_READ_BENCHMARKS: ${{ inputs.perform-read-benchmarks }}
   PHYSICAL_TENANT_COUNT: ${{ inputs.physical-tenant-count }}
   PLATFORM_HELM_VALUES: ${{ inputs.platform-helm-values }}
-  RESOLVED_IMAGE_REGISTRY: ${{ inputs.image-registry }}
   SCENARIO: ${{ inputs.scenario }}
   SECONDARY_STORAGE_TYPE: ${{ inputs.secondary-storage-type }}
   TARGET_VERSION: ${{ inputs.target-version }}
@@ -225,19 +234,20 @@ jobs:
           .github/scripts/load-test-install-camunda-platform.sh \
             "${NAMESPACE}" \
             "${INSTALL_TARGET}" \
-            "${CALCULATED_IMAGE_TAG}" \
-            "${IMAGE_REPOSITORY}" \
-            "${RESOLVED_IMAGE_REGISTRY}" \
-            "${CAMUNDA_REPO}" \
-            "${OPTIMIZE_REPO}" \
+            "${LOAD_TEST_IMAGE_TAG}" \
+            "${LOAD_TEST_IMAGE_REPOSITORY}" \
             "${PERFORM_READ_BENCHMARKS}" \
             "${ENABLE_OPTIMIZE}" \
             "${ENABLE_OPTIMIZE_METRICS}" \
             "${METRICS_EXPORTER_BUILT}" \
             "${ENABLE_CHAOS}" \
             "${PHYSICAL_TENANT_COUNT}" \
-            --optimize-tag "${OPTIMIZE_TAG}" \
+            --orchestration-registry "${ORCHESTRATION_REGISTRY}" \
+            --orchestration-repository "${ORCHESTRATION_REPOSITORY}" \
             --orchestration-tag "${ORCHESTRATION_TAG}" \
+            --optimize-registry "${OPTIMIZE_REGISTRY}" \
+            --optimize-repository "${OPTIMIZE_REPOSITORY}" \
+            --optimize-tag "${OPTIMIZE_TAG}" \
             --identity-tag "${IDENTITY_TAG}" \
             --connectors-tag "${CONNECTORS_TAG}" \
             --load-test-load "${LOAD_TEST_LOAD}" \

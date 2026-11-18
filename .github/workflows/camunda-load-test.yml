@@ -572,14 +572,17 @@ jobs:
       enable-optimize-report-metrics: ${{ inputs.enable-optimize-report-metrics }}
       secondary-storage-type: ${{ inputs.secondary-storage-type }}
       target-version: ${{ inputs.target-version }}
-      image-tag: ${{ needs.calculate-image-tag.outputs.image-tag }}
+      load-test-image-tag: ${{ needs.calculate-image-tag.outputs.image-tag }}
       # The env context is not available in `with`: keep in sync with IMAGE_REPOSITORY above.
-      image-repository: registry.camunda.cloud/team-zeebe
-      image-registry: ${{ inputs.orchestration-tag != '' && 'docker.io' || 'registry.camunda.cloud' }}
-      camunda-repository: ${{ inputs.orchestration-tag != '' && 'camunda/camunda' || 'team-zeebe/camunda' }}
-      optimize-repository: ${{ inputs.orchestration-tag != '' && 'camunda/optimize' || 'team-zeebe/optimize' }}
-      orchestration-tag: ${{ inputs.orchestration-tag }}
-      optimize-tag: ${{ inputs.optimize-tag }}
+      load-test-image-repository: registry.camunda.cloud/team-zeebe
+      orchestration-registry: ${{ inputs.orchestration-tag != '' && 'docker.io' || 'registry.camunda.cloud' }}
+      orchestration-repository: ${{ inputs.orchestration-tag != '' && 'camunda/camunda' || 'team-zeebe/camunda' }}
+      orchestration-tag: ${{ needs.calculate-image-tag.outputs.image-tag }}
+      # An explicit Optimize tag is used alone. Without it, Optimize is built from source
+      # unless the orchestration image comes from Docker Hub.
+      optimize-registry: ${{ inputs.optimize-tag == '' && inputs.orchestration-tag == '' && 'registry.camunda.cloud' || '' }}
+      optimize-repository: ${{ inputs.optimize-tag == '' && inputs.orchestration-tag == '' && 'team-zeebe/optimize' || '' }}
+      optimize-tag: ${{ inputs.optimize-tag != '' && inputs.optimize-tag || (inputs.orchestration-tag == '' && needs.calculate-image-tag.outputs.image-tag || '') }}
       identity-tag: ${{ inputs.identity-tag }}
       connectors-tag: ${{ inputs.connectors-tag }}
       metrics-exporter-built: ${{ needs.build-metrics-exporter-image.result == 'success' }}
